@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QPoint, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtGui import QAction, QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from PyQt6.QtCore import QUrl
 
 from core.browser_bridge import BrowserBridgeServer, BrowserStateStore
 from core.browser_setup import detect_browsers, extension_manual_url, launch_extension_setup
@@ -45,6 +46,23 @@ from ui.window_effects import apply_native_window_theme
 
 SEARCH_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "search_icon.svg"
 EXTENSION_DIR = Path(__file__).resolve().parent.parent / "extension" / "memact"
+
+
+def _domain_chip(url: str | None) -> str | None:
+    if not url:
+        return None
+    text = url.split("://", 1)[-1].split("/", 1)[0].removeprefix("www.")
+    return text or None
+
+
+def _duration_chip(seconds: int) -> str:
+    minutes = max(int(round(seconds / 60)), 1)
+    if minutes >= 60:
+        hours, minutes = divmod(minutes, 60)
+        if minutes:
+            return f"{hours}h {minutes}m"
+        return f"{hours}h"
+    return f"{minutes}m"
 
 
 class SignalBridge(QObject):
@@ -154,16 +172,41 @@ class EvidenceCard(QFrame):
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(6)
 
-        title = QLabel(span.label)
+        title = QLabel(span.session_title)
         title.setObjectName("EvidenceTitle")
         title.setWordWrap(True)
 
         app_label = span.application.removesuffix(".exe").replace("_", " ").title()
+        chip_row = QHBoxLayout()
+        chip_row.setContentsMargins(0, 0, 0, 0)
+        chip_row.setSpacing(8)
+        for chip_text in (app_label, _domain_chip(span.url), _duration_chip(span.duration_seconds)):
+            if not chip_text:
+                continue
+            chip = QLabel(chip_text)
+            chip.setObjectName("EvidenceChip")
+            chip_row.addWidget(chip)
+        chip_row.addStretch(1)
+
         meta = QLabel(
             f"{span.start_at.strftime('%b %d')}  |  {span.start_at.strftime('%I:%M %p').lstrip('0')} to {span.end_at.strftime('%I:%M %p').lstrip('0')}  |  {app_label}"
         )
         meta.setObjectName("EvidenceMeta")
         meta.setWordWrap(True)
+
+        link_button = None
+        domain = _domain_chip(span.url)
+        if span.url and domain:
+            link_button = QPushButton(f"Open {domain}")
+            link_button.setObjectName("EvidenceLinkButton")
+            link_button.clicked.connect(lambda _checked=False, value=span.url: QDesktopServices.openUrl(QUrl(value)))
+
+        if span.attention_cue:
+            attention = QLabel(span.attention_cue)
+            attention.setObjectName("EvidenceAttention")
+            attention.setWordWrap(True)
+        else:
+            attention = None
 
         snippet = QLabel(span.snippet)
         snippet.setObjectName("EvidenceSnippet")
@@ -173,9 +216,35 @@ class EvidenceCard(QFrame):
         reason.setObjectName("EvidenceReason")
         reason.setWordWrap(True)
 
+        moment_text = span.session_flow if span.session_flow.casefold() != span.session_title.casefold() else span.moment_summary
+        moment = QLabel(moment_text)
+        moment.setObjectName("EvidenceMoment")
+        moment.setWordWrap(True)
+
         layout.addWidget(title)
+        layout.addLayout(chip_row)
         layout.addWidget(meta)
+        if link_button is not None:
+            layout.addWidget(link_button, 0, Qt.AlignmentFlag.AlignLeft)
+        if attention is not None:
+            layout.addWidget(attention)
         layout.addWidget(snippet)
+        layout.addWidget(moment)
+        if span.tab_preview:
+            tabs = QLabel("Nearby tabs: " + "  |  ".join(span.tab_preview))
+            tabs.setObjectName("EvidenceTabs")
+            tabs.setWordWrap(True)
+            layout.addWidget(tabs)
+        if span.before_context:
+            before = QLabel(f"Before: {span.before_context}")
+            before.setObjectName("EvidenceContext")
+            before.setWordWrap(True)
+            layout.addWidget(before)
+        if span.after_context:
+            after = QLabel(f"After: {span.after_context}")
+            after.setObjectName("EvidenceContext")
+            after.setWordWrap(True)
+            layout.addWidget(after)
         layout.addWidget(reason)
 
 
@@ -358,7 +427,8 @@ class MainWindow(QMainWindow):
                 border: none;
                 border-radius: 16px;
                 padding: 6px 12px;
-                font-size: 20px;
+                font-size: 22px;
+                font-weight: 600;
             }
             QPushButton#MenuButton:hover {
                 background: rgba(255, 255, 255, 0.08);
@@ -511,9 +581,12 @@ class MainWindow(QMainWindow):
                 background: transparent;
                 border: none;
             }
+            QScrollArea#EvidenceScroll QWidget {
+                background: transparent;
+            }
             QFrame#EvidenceCard {
-                background: rgba(255, 255, 255, 0.055);
-                border: 1px solid rgba(255, 255, 255, 0.14);
+                background: rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 18px;
             }
             QLabel#EvidenceTitle {
@@ -521,14 +594,53 @@ class MainWindow(QMainWindow):
                 font-size: 18px;
                 font-weight: 600;
             }
+            QLabel#EvidenceChip {
+                background: rgba(121, 173, 255, 0.12);
+                color: rgba(255, 255, 255, 0.88);
+                border: 1px solid rgba(121, 173, 255, 0.22);
+                border-radius: 11px;
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 600;
+            }
             QLabel#EvidenceMeta {
                 color: rgba(121, 173, 255, 0.92);
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton#EvidenceLinkButton {
+                background: rgba(121, 173, 255, 0.12);
+                color: #ffffff;
+                border: 1px solid rgba(121, 173, 255, 0.24);
+                border-radius: 12px;
+                padding: 6px 12px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton#EvidenceLinkButton:hover {
+                background: rgba(121, 173, 255, 0.2);
+            }
+            QLabel#EvidenceAttention {
+                color: rgba(255, 255, 255, 0.76);
                 font-size: 12px;
                 font-weight: 600;
             }
             QLabel#EvidenceSnippet {
                 color: rgba(255, 255, 255, 0.82);
                 font-size: 14px;
+            }
+            QLabel#EvidenceMoment {
+                color: rgba(121, 173, 255, 0.94);
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QLabel#EvidenceTabs {
+                color: rgba(255, 255, 255, 0.66);
+                font-size: 12px;
+            }
+            QLabel#EvidenceContext {
+                color: rgba(255, 255, 255, 0.72);
+                font-size: 13px;
             }
             QLabel#EvidenceReason {
                 color: rgba(255, 255, 255, 0.58);
@@ -577,11 +689,22 @@ class MainWindow(QMainWindow):
         self.back_orb.setFixedSize(62, 62)
         back_layout = QVBoxLayout(self.back_orb)
         back_layout.setContentsMargins(8, 8, 8, 8)
-        self.back_button = QPushButton("<")
+        self.back_button = QPushButton("\u2190")
         self.back_button.setObjectName("MenuButton")
         self.back_button.setFixedSize(46, 46)
         self.back_button.clicked.connect(self._go_home)
         back_layout.addWidget(self.back_button)
+
+        self.reload_orb = QFrame()
+        self.reload_orb.setObjectName("MenuOrb")
+        self.reload_orb.setFixedSize(62, 62)
+        reload_layout = QVBoxLayout(self.reload_orb)
+        reload_layout.setContentsMargins(8, 8, 8, 8)
+        self.reload_button = QPushButton("\u21bb")
+        self.reload_button.setObjectName("MenuButton")
+        self.reload_button.setFixedSize(46, 46)
+        self.reload_button.clicked.connect(self._reload_query)
+        reload_layout.addWidget(self.reload_button)
 
         self.compact_brand_host = QWidget()
         self.compact_brand_host.setFixedWidth(62)
@@ -590,13 +713,13 @@ class MainWindow(QMainWindow):
         self.compact_brand = QLabel("m")
         self.compact_brand.setObjectName("CompactBrand")
         self.compact_brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        compact_brand_font = body_font(34)
+        compact_brand_font = brand_font(34)
         compact_brand_font.setBold(True)
         self.compact_brand.setFont(compact_brand_font)
         brand_layout.addWidget(self.compact_brand)
 
         self.results_search_stack = QWidget()
-        self.results_search_stack.setFixedWidth(780)
+        self.results_search_stack.setFixedWidth(792)
         self.results_search_layout = QVBoxLayout(self.results_search_stack)
         self.results_search_layout.setContentsMargins(0, 0, 0, 0)
         self.results_search_layout.setSpacing(0)
@@ -604,17 +727,29 @@ class MainWindow(QMainWindow):
         self.results_header = QWidget()
         results_header_layout = QHBoxLayout(self.results_header)
         results_header_layout.setContentsMargins(0, 0, 0, 0)
-        results_header_layout.setSpacing(16)
+        results_header_layout.setSpacing(14)
         results_header_layout.addWidget(self.compact_brand_host)
         results_header_layout.addWidget(self.back_orb)
+        results_header_layout.addWidget(self.reload_orb)
         results_header_layout.addWidget(self.results_search_stack, 0)
+        self.results_menu_orb = QFrame()
+        self.results_menu_orb.setObjectName("MenuOrb")
+        self.results_menu_orb.setFixedSize(62, 62)
+        results_menu_layout = QVBoxLayout(self.results_menu_orb)
+        results_menu_layout.setContentsMargins(8, 8, 8, 8)
+        self.results_menu_button = QPushButton("...")
+        self.results_menu_button.setObjectName("MenuButton")
+        self.results_menu_button.setFixedSize(46, 46)
+        self.results_menu_button.clicked.connect(self._show_menu)
+        results_menu_layout.addWidget(self.results_menu_button)
+        results_header_layout.addWidget(self.results_menu_orb)
         self.results_header.hide()
         top_bar.addWidget(self.results_header, 0, Qt.AlignmentFlag.AlignLeft)
         top_bar.addSpacing(16)
-        menu_orb = QFrame()
-        menu_orb.setObjectName("MenuOrb")
-        menu_orb.setFixedSize(62, 62)
-        menu_layout = QVBoxLayout(menu_orb)
+        self.home_menu_orb = QFrame()
+        self.home_menu_orb.setObjectName("MenuOrb")
+        self.home_menu_orb.setFixedSize(62, 62)
+        menu_layout = QVBoxLayout(self.home_menu_orb)
         menu_layout.setContentsMargins(8, 8, 8, 8)
         self.menu_button = QPushButton("...")
         self.menu_button.setObjectName("MenuButton")
@@ -622,7 +757,7 @@ class MainWindow(QMainWindow):
         self.menu_button.clicked.connect(self._show_menu)
         menu_layout.addWidget(self.menu_button)
         top_bar.addStretch(1)
-        top_bar.addWidget(menu_orb, 0, Qt.AlignmentFlag.AlignRight)
+        top_bar.addWidget(self.home_menu_orb, 0, Qt.AlignmentFlag.AlignRight)
         layout.addLayout(top_bar)
 
         self.top_spacer = QSpacerItem(
@@ -901,6 +1036,7 @@ class MainWindow(QMainWindow):
     def _sync_back_button(self) -> None:
         show_back = bool(self.search_input.text().strip()) or self.answer_card.isVisible()
         self.back_orb.setVisible(show_back)
+        self.reload_orb.setVisible(show_back)
 
     def _menu_stylesheet(self) -> str:
         return """
@@ -986,12 +1122,14 @@ class MainWindow(QMainWindow):
         if active:
             self.title_label.hide()
             self.results_header.show()
+            self.home_menu_orb.hide()
             self.results_search_layout.addWidget(self.search_shell)
             self.top_spacer.changeSize(20, 8, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-            self.search_shell.setMinimumWidth(700)
-            self.search_shell.setMaximumWidth(700)
+            self.search_shell.setMinimumWidth(706)
+            self.search_shell.setMaximumWidth(706)
         else:
             self.results_header.hide()
+            self.home_menu_orb.show()
             self.title_label.show()
             self.center_layout.insertWidget(3, self.search_shell, 0, Qt.AlignmentFlag.AlignCenter)
             self.center_layout.insertWidget(4, self.suggestion_dock, 0, Qt.AlignmentFlag.AlignCenter)
@@ -1188,6 +1326,10 @@ class MainWindow(QMainWindow):
     def _go_home(self) -> None:
         self._reset_home_state(clear_query=True)
 
+    def _reload_query(self) -> None:
+        if self.search_input.text().strip():
+            self._submit_query()
+
     def _reset_home_state(self, *, clear_query: bool) -> None:
         self._set_results_mode(False)
         self.suggestion_dock.hide()
@@ -1340,7 +1482,8 @@ class MainWindow(QMainWindow):
         self._position_suggestion_dock()
 
     def _show_menu(self) -> None:
-        self.overflow_menu.popup(self.menu_button.mapToGlobal(self.menu_button.rect().bottomLeft()))
+        anchor = self.results_menu_button if self._results_mode else self.menu_button
+        self.overflow_menu.popup(anchor.mapToGlobal(anchor.rect().bottomLeft()))
 
     def _handle_tray_click(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:

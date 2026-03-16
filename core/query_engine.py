@@ -9,7 +9,7 @@ from datetime import date, datetime, time, timedelta
 from difflib import SequenceMatcher
 from urllib.parse import urlparse
 
-from core.database import Event, lexical_candidates, list_events_between, list_recent_events
+from core.database import Event, lexical_candidates, list_events_around, list_events_between, list_recent_events
 from core.semantic import cosine_similarity, embed_text, tokenize
 
 
@@ -66,12 +66,19 @@ class ActivitySpan:
     end_at: datetime
     duration_seconds: int
     label: str
+    session_title: str
+    session_flow: str
+    attention_cue: str | None
+    tab_preview: list[str]
     application: str
     url: str | None
     events: list[Event]
     relevance: float
     snippet: str
     match_reason: str
+    before_context: str | None
+    after_context: str | None
+    moment_summary: str
 
 
 @dataclass(slots=True)
@@ -151,9 +158,24 @@ def _normalize_label(value: str) -> str:
     return " ".join(collapsed)
 
 
+def _dedupe_label_against_app(label: str, application: str) -> str:
+    normalized = _normalize_label(label)
+    if not normalized:
+        return _friendly_app_name(application)
+    app_name = _friendly_app_name(application)
+    label_tokens = normalized.split()
+    app_tokens = app_name.split()
+    if app_tokens and len(label_tokens) >= len(app_tokens):
+        if [token.casefold() for token in label_tokens[-len(app_tokens):]] == [
+            token.casefold() for token in app_tokens
+        ]:
+            normalized = " ".join(label_tokens[:-len(app_tokens)]).strip()
+    return normalized or app_name
+
+
 def _display_label(span: ActivitySpan) -> str:
     app_name = _friendly_app_name(span.application)
-    label = _normalize_label(span.label)
+    label = _dedupe_label_against_app(span.label, span.application)
     if not label:
         return app_name
     if label.casefold() == app_name.casefold():
@@ -172,6 +194,21 @@ def _unique_span_labels(spans: list[ActivitySpan], limit: int = 3) -> list[str]:
         if not label or key in seen:
             continue
         unique.append(label)
+        seen.add(key)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
+def _unique_session_titles(spans: list[ActivitySpan], limit: int = 3) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for span in spans:
+        title = span.session_title.strip()
+        key = title.casefold()
+        if not title or key in seen:
+            continue
+        unique.append(title)
         seen.add(key)
         if len(unique) >= limit:
             break
@@ -403,6 +440,163 @@ def _snippet_from_event(event: Event) -> str:
     return _friendly_app_name(event.application)
 
 
+def _context_label(event: Event) -> str:
+    domain = _domain(event.url)
+    if domain:
+        return domain
+    title = (event.window_title or event.content_text or "").strip()
+    if title:
+        return _normalize_label(title)
+    return _friendly_app_name(event.application)
+
+
+def _context_summary(events: list[Event], exclude_ids: set[int]) -> str | None:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for event in events:
+        if event.id in exclude_ids:
+            continue
+        label = _context_label(event)
+        key = label.casefold()
+        if not label or key in seen:
+            continue
+        labels.append(label)
+        seen.add(key)
+        if len(labels) >= 2:
+            break
+    if not labels:
+        return None
+    if len(labels) == 1:
+        return labels[0]
+    return f"{labels[0]} -> {labels[1]}"
+
+
+def _moment_summary(
+    label: str,
+    application: str,
+    before_context: str | None,
+    after_context: str | None,
+) -> str:
+    primary = label or _friendly_app_name(application)
+    if before_context and after_context:
+        return f"{before_context} -> {primary} -> {after_context}"
+    if before_context:
+        return f"{before_context} -> {primary}"
+    if after_context:
+        return f"{primary} -> {after_context}"
+    return primary
+
+
+def _session_title(
+    label: str,
+    application: str,
+    url: str | None,
+    duration_seconds: int,
+) -> str:
+    app_name = _friendly_app_name(application)
+    clean_label = _dedupe_label_against_app(label, application)
+    domain = _domain(url)
+    lower_app = app_name.casefold()
+
+    if domain:
+        if any(browser in lower_app for browser in ("edge", "chrome", "firefox", "browser", "safari", "brave")):
+            return f"Browsing {domain}"
+        return f"Using {domain} in {app_name}"
+
+    if clean_label and clean_label.casefold() != app_name.casefold():
+        if duration_seconds >= 8 * 60:
+            return f"Working on {clean_label}"
+        return f"Using {clean_label}"
+
+    if duration_seconds >= 8 * 60:
+        return f"Working in {app_name}"
+    return f"Using {app_name}"
+
+
+def _tab_preview(events: list[Event]) -> list[str]:
+    previews: list[str] = []
+    seen: set[str] = set()
+    for event in events:
+        for title in event.tab_titles[:4]:
+            clean = _normalize_label(title)
+            key = clean.casefold()
+            if not clean or key in seen:
+                continue
+            previews.append(clean)
+            seen.add(key)
+            if len(previews) >= 3:
+                return previews
+    return previews
+
+
+def _attention_cue(events: list[Event], duration_seconds: int, url: str | None) -> str | None:
+    if not events:
+        return None
+    interaction_types = {event.interaction_type.casefold() for event in events}
+    if "focus" in interaction_types and "heartbeat" in interaction_types and duration_seconds >= 5 * 60:
+        return "Stayed here for a sustained stretch"
+    if "focus" in interaction_types and duration_seconds <= 90:
+        return "Quick switch into this moment"
+    if any("heartbeat" in kind for kind in interaction_types) and duration_seconds >= 12 * 60:
+        return "Likely a deeper attention block"
+    if url and any(event.tab_titles for event in events):
+        return "Browser context captured with nearby tabs"
+    return None
+
+
+def _flow_label(span: ActivitySpan) -> str:
+    domain = _domain(span.url)
+    if domain:
+        return domain
+    title = span.session_title
+    for prefix in ("Browsing ", "Using ", "Working on ", "Working in "):
+        if title.startswith(prefix):
+            return title.removeprefix(prefix)
+    return _display_label(span)
+
+
+def _annotate_session_flows(spans: list[ActivitySpan]) -> None:
+    if not spans:
+        return
+    chronological = sorted(range(len(spans)), key=lambda index: spans[index].start_at)
+    by_index = {position: original for position, original in enumerate(chronological)}
+    ordered = [spans[index] for index in chronological]
+
+    for position, span in enumerate(ordered):
+        prev_span = ordered[position - 1] if position > 0 else None
+        next_span = ordered[position + 1] if position + 1 < len(ordered) else None
+        flow = span.session_title
+
+        prev_gap = None
+        if prev_span is not None:
+            prev_gap = (span.start_at - prev_span.end_at).total_seconds()
+        next_gap = None
+        if next_span is not None:
+            next_gap = (next_span.start_at - span.end_at).total_seconds()
+
+        prev_valid = (
+            prev_span is not None
+            and prev_gap is not None
+            and 0 <= prev_gap <= 20 * 60
+            and _flow_label(prev_span).casefold() != _flow_label(span).casefold()
+        )
+        next_valid = (
+            next_span is not None
+            and next_gap is not None
+            and 0 <= next_gap <= 20 * 60
+            and _flow_label(next_span).casefold() != _flow_label(span).casefold()
+        )
+
+        if prev_valid and next_valid:
+            flow = f"Moved from {_flow_label(prev_span)} to {_flow_label(next_span)} around {_flow_label(span)}"
+        elif prev_valid:
+            flow = f"Moved from {_flow_label(prev_span)} into {_flow_label(span)}"
+        elif next_valid:
+            flow = f"Started in {_flow_label(span)} and then moved to {_flow_label(next_span)}"
+
+        spans[by_index[position]].session_flow = flow
+
+
 def _match_reason(match: EventMatch | None) -> str:
     if match is None:
         return "Relevant local activity"
@@ -441,18 +635,47 @@ def _build_spans(ranked: list[EventMatch]) -> list[ActivitySpan]:
             end_at = max(next_start, start_at + timedelta(seconds=20))
         duration_seconds = int((end_at - start_at).total_seconds())
         span_score = max(score_by_id.get(event.id, 0.0) for event in current_events)
+        current_ids = {event.id for event in current_events}
+        before_events, after_events = list_events_around(
+            first.occurred_at,
+            before_limit=6,
+            after_limit=6,
+        )
+        before_context = _context_summary(before_events, current_ids)
+        after_context = _context_summary(after_events, current_ids)
+        display_label = _event_label(best_event)
+        session_title = _session_title(
+            display_label,
+            best_event.application,
+            best_event.url,
+            duration_seconds,
+        )
+        tab_preview = _tab_preview(current_events)
+        attention_cue = _attention_cue(current_events, duration_seconds, best_event.url)
         spans.append(
             ActivitySpan(
                 start_at=start_at,
                 end_at=end_at,
                 duration_seconds=duration_seconds,
-                label=_event_label(best_event),
+                label=display_label,
+                session_title=session_title,
+                session_flow=session_title,
+                attention_cue=attention_cue,
+                tab_preview=tab_preview,
                 application=best_event.application,
                 url=best_event.url,
                 events=list(current_events),
                 relevance=span_score,
                 snippet=_snippet_from_event(best_event),
                 match_reason=_match_reason(match_by_id.get(best_event.id)),
+                before_context=before_context,
+                after_context=after_context,
+                moment_summary=_moment_summary(
+                    _dedupe_label_against_app(display_label, best_event.application),
+                    best_event.application,
+                    before_context,
+                    after_context,
+                ),
             )
         )
         current_events = []
@@ -494,6 +717,7 @@ def _build_spans(ranked: list[EventMatch]) -> list[ActivitySpan]:
             continue
         deduped.append(span)
         seen.add(key)
+    _annotate_session_flows(deduped)
     return deduped
 
 
@@ -519,6 +743,24 @@ def _listing_query(query: str) -> bool:
     return text.startswith("which ") or "what apps" in text or "what sites" in text
 
 
+def _contextual_recall_query(query: str) -> tuple[str | None, str | None]:
+    text = query.strip().rstrip("?")
+    patterns = (
+        ("before", r"(?i)^what was i doing before (.+)$"),
+        ("after", r"(?i)^what did i do after (.+)$"),
+        ("around", r"(?i)^what else was open around (.+)$"),
+        ("around", r"(?i)^what was open around (.+)$"),
+        ("around", r"(?i)^what else was i doing around (.+)$"),
+    )
+    for kind, pattern in patterns:
+        match = re.match(pattern, text)
+        if match:
+            anchor = match.group(1).strip()
+            if anchor:
+                return kind, anchor
+    return None, None
+
+
 def _summarize_detail(span: ActivitySpan) -> str:
     app_name = _friendly_app_name(span.application)
     if span.url:
@@ -526,8 +768,76 @@ def _summarize_detail(span: ActivitySpan) -> str:
     return f"{_format_clock(span.start_at)} to {_format_clock(span.end_at)} in {app_name}: {_display_label(span)}"
 
 
+def _readable_context(value: str | None) -> str | None:
+    if not value:
+        return None
+    parts = [part.strip() for part in value.split("->") if part.strip()]
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]}, then {parts[1]}"
+    return f"{parts[0]}, then {parts[1]}, and later {parts[-1]}"
+
+
+def _moment_hint(span: ActivitySpan) -> str | None:
+    before_context = _readable_context(span.before_context)
+    after_context = _readable_context(span.after_context)
+    if before_context and after_context:
+        return f"around {before_context} and then {after_context}"
+    if before_context:
+        return f"after {before_context}"
+    if after_context:
+        return f"before {after_context}"
+    return None
+
+
+def _flow_phrase(span: ActivitySpan) -> str:
+    flow = span.session_flow.strip()
+    mappings = (
+        ("Browsing ", "you were browsing "),
+        ("Using ", "you were using "),
+        ("Working on ", "you were working on "),
+        ("Working in ", "you were working in "),
+        ("Started in ", "you started in "),
+        ("Moved from ", "you moved from "),
+    )
+    for prefix, replacement in mappings:
+        if flow.startswith(prefix):
+            return replacement + flow.removeprefix(prefix)
+    return f"you were in {flow.lower()}"
+
+
+def _memory_summary(span: ActivitySpan, time_scope: str | None) -> str:
+    pieces: list[str] = []
+    if time_scope:
+        pieces.append(f"In {time_scope},")
+    pieces.append(f"the strongest local moment suggests {_flow_phrase(span)}")
+    hint = _moment_hint(span)
+    if hint:
+        pieces.append(hint)
+    return " ".join(pieces).replace(" ,", ",") + "."
+
+
+def _moment_follow_ups(span: ActivitySpan, time_scope: str | None) -> list[str]:
+    prompts: list[str] = []
+    label = _display_label(span)
+    if span.before_context:
+        prompts.append(f"What was I doing before {label}?")
+    if span.after_context:
+        prompts.append(f"What did I do after {label}?")
+    if span.before_context or span.after_context:
+        prompts.append(f"What else was open around {label}?")
+    elif time_scope:
+        prompts.append(f"What else was I doing {time_scope}?")
+    return prompts
+
+
 def _query_summary(spans: list[ActivitySpan], time_scope: str | None) -> str:
-    labels = _unique_span_labels(spans, limit=3)
+    labels = _unique_session_titles(spans, limit=3)
+    if not labels:
+        labels = _unique_span_labels(spans, limit=3)
     if not labels:
         labels = [_friendly_app_name(span.application) for span in spans[:3]]
     count_text = f"{len(spans)} strong local matches"
@@ -545,6 +855,7 @@ def _build_related_queries(query: str, spans: list[ActivitySpan], time_scope: st
     for span in spans[:3]:
         label = _display_label(span)
         app = _friendly_app_name(span.application)
+        prompts.extend(_moment_follow_ups(span, time_scope))
         if span.url:
             domain = _domain(span.url) or label
             prompts.append(f"How much time did I spend on {domain} today?")
@@ -612,15 +923,50 @@ def answer_query(query: str) -> QueryAnswer:
 
     summary = _query_summary(relevant_spans, time_scope)
     related_queries = _build_related_queries(query, relevant_spans, time_scope)
+    contextual_kind, contextual_anchor = _contextual_recall_query(query)
+
+    if contextual_kind and contextual_anchor:
+        anchor_candidates = _load_candidate_events(contextual_anchor, start_at, end_at)
+        anchor_ranked = _rank_events(contextual_anchor, anchor_candidates)
+        anchor_spans = _build_spans(anchor_ranked) if anchor_ranked else []
+        if anchor_spans:
+            anchor = anchor_spans[0]
+            answer = "I could not recover enough surrounding context for that moment."
+            contextual_summary = _memory_summary(anchor, time_scope)
+            if contextual_kind == "before":
+                if anchor.before_context:
+                    answer = anchor.before_context
+                    contextual_summary = f"Right before {anchor.session_title.lower()}, your local activity pointed to {anchor.before_context}."
+            elif contextual_kind == "after":
+                if anchor.after_context:
+                    answer = anchor.after_context
+                    contextual_summary = f"Right after {anchor.session_title.lower()}, your local activity shifted to {anchor.after_context}."
+            else:
+                around_parts = [part for part in (anchor.before_context, anchor.after_context) if part]
+                if around_parts:
+                    answer = " then ".join(around_parts)
+                    contextual_summary = f"Around {anchor.session_title.lower()}, nearby context included {' and then '.join(around_parts)}."
+            return QueryAnswer(
+                answer=answer,
+                summary=contextual_summary,
+                details_label="Show anchor moment",
+                evidence=anchor_spans[:1],
+                time_scope_label=time_scope,
+                result_count=len(anchor_ranked),
+                related_queries=_moment_follow_ups(anchor, time_scope),
+            )
 
     if _duration_query(query):
         total_seconds = sum(span.duration_seconds for span in relevant_spans)
         answer = _format_duration(total_seconds)
         if time_scope:
             answer = f"{answer} in {time_scope}"
+        detail_summary = summary
+        if relevant_spans:
+            detail_summary = _memory_summary(relevant_spans[0], time_scope)
         return QueryAnswer(
             answer=answer,
-            summary=summary,
+            summary=detail_summary,
             details_label="Show top matches",
             evidence=relevant_spans[:6],
             time_scope_label=time_scope,
@@ -633,7 +979,7 @@ def answer_query(query: str) -> QueryAnswer:
         answer = f"{_format_clock(span.start_at)} on {span.start_at.strftime('%b %d')}"
         return QueryAnswer(
             answer=answer,
-            summary=f"Best local match: {_display_label(span)} in {_friendly_app_name(span.application)}.",
+            summary=_memory_summary(span, time_scope),
             details_label="Show top matches",
             evidence=relevant_spans[:6],
             time_scope_label=time_scope,
@@ -647,7 +993,7 @@ def answer_query(query: str) -> QueryAnswer:
         answer = "I do not have clear evidence for that."
         if strongest.relevance >= threshold:
             answer = f"Yes, most likely around {_format_clock(strongest.start_at)}."
-            summary = f"Best evidence points to {_display_label(strongest)} in {_friendly_app_name(strongest.application)}."
+            summary = _memory_summary(strongest, time_scope)
         return QueryAnswer(
             answer=answer,
             summary=summary,
@@ -659,10 +1005,14 @@ def answer_query(query: str) -> QueryAnswer:
         )
 
     if _listing_query(query):
-        labels = _unique_span_labels(relevant_spans, limit=5)
+        labels = _unique_session_titles(relevant_spans, limit=5)
+        if not labels:
+            labels = _unique_span_labels(relevant_spans, limit=5)
         if not labels:
             labels = [_friendly_app_name(span.application) for span in relevant_spans[:5]]
         answer = ", ".join(labels[:5]) if labels else "I found matching local activity."
+        if relevant_spans:
+            summary = _memory_summary(relevant_spans[0], time_scope)
         return QueryAnswer(
             answer=answer,
             summary=summary,
@@ -677,16 +1027,22 @@ def answer_query(query: str) -> QueryAnswer:
     if time_scope and len(_meaningful_tokens(query)) <= 4:
         phrases = [_summarize_detail(span) for span in top_spans]
         answer = " ; ".join(phrases)
+        summary = _memory_summary(top_spans[0], time_scope)
     else:
-        labels = _unique_span_labels(top_spans, limit=3)
+        labels = _unique_session_titles(top_spans, limit=3)
+        if not labels:
+            labels = _unique_span_labels(top_spans, limit=3)
         if not labels:
             labels = [_friendly_app_name(span.application) for span in top_spans[:2]]
         if len(labels) == 1:
-            answer = f"I found activity related to {labels[0]}."
+            answer = f"I found a local moment where {_flow_phrase(top_spans[0])}."
         elif len(labels) == 2:
-            answer = f"I found activity related to {labels[0]} and {labels[1]}."
+            answer = f"I found local moments around {labels[0].lower()} and {labels[1].lower()}."
         else:
-            answer = f"I found activity related to {', '.join(labels[:-1])}, and {labels[-1]}."
+            lowered = [label.lower() for label in labels]
+            answer = f"I found local moments around {', '.join(lowered[:-1])}, and {lowered[-1]}."
+        if top_spans:
+            summary = _memory_summary(top_spans[0], time_scope)
     return QueryAnswer(
         answer=answer,
         summary=summary,

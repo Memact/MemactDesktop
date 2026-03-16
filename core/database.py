@@ -440,6 +440,64 @@ def list_events_between(
     return [Event(**dict(row)) for row in rows]
 
 
+def list_events_around(
+    occurred_at: str,
+    *,
+    before_limit: int = 6,
+    after_limit: int = 6,
+) -> tuple[list[Event], list[Event]]:
+    with get_connection() as connection:
+        before_rows = connection.execute(
+            """
+            SELECT
+                id,
+                occurred_at,
+                application,
+                window_title,
+                url,
+                interaction_type,
+                content_text,
+                exe_path,
+                tab_titles_json,
+                tab_urls_json,
+                searchable_text,
+                embedding_json,
+                source
+            FROM events
+            WHERE occurred_at < ?
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT ?
+            """,
+            (occurred_at, before_limit),
+        ).fetchall()
+        after_rows = connection.execute(
+            """
+            SELECT
+                id,
+                occurred_at,
+                application,
+                window_title,
+                url,
+                interaction_type,
+                content_text,
+                exe_path,
+                tab_titles_json,
+                tab_urls_json,
+                searchable_text,
+                embedding_json,
+                source
+            FROM events
+            WHERE occurred_at > ?
+            ORDER BY occurred_at ASC, id ASC
+            LIMIT ?
+            """,
+            (occurred_at, after_limit),
+        ).fetchall()
+    before_events = [Event(**dict(row)) for row in reversed(before_rows)]
+    after_events = [Event(**dict(row)) for row in after_rows]
+    return before_events, after_events
+
+
 def lexical_candidates(
     query: str,
     *,
