@@ -46,6 +46,14 @@ _STOP_WORDS = {
     "where",
     "which",
     "yesterday",
+    "com",
+    "net",
+    "org",
+    "io",
+    "ai",
+    "co",
+    "dev",
+    "app",
 }
 
 
@@ -113,6 +121,112 @@ def _domain(url: str | None) -> str | None:
     if parsed.netloc:
         return parsed.netloc.removeprefix("www.")
     return None
+
+
+def _extract_domains(query: str) -> set[str]:
+    if not query:
+        return set()
+    matches = re.findall(r"(?:https?://)?([a-z0-9.-]+\.[a-z]{2,})", query.lower())
+    domains = {match.removeprefix("www.").strip(".") for match in matches if match}
+    return {domain for domain in domains if domain and "." in domain}
+
+
+def _extract_app_hint(query: str, events: list[Event]) -> str | None:
+    if not query or not events:
+        return None
+    lower = query.lower()
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for event in events:
+        app = _friendly_app_name(event.application)
+        key = app.casefold()
+        if key in seen or len(key) < 3:
+            continue
+        seen.add(key)
+        candidates.append(app)
+    candidates.sort(key=len, reverse=True)
+    for app in candidates:
+        if app.lower() in lower:
+            return app
+    return None
+
+
+def _event_matches_app(event: Event, app_hint: str | None) -> bool:
+    if not app_hint:
+        return False
+    return _friendly_app_name(event.application).casefold() == app_hint.casefold()
+
+
+def _estimate_duration_seconds(
+    events: list[Event],
+    *,
+    match_event,
+    max_gap_seconds: int = 6 * 60,
+    min_step_seconds: int = 20,
+) -> int:
+    if not events:
+        return 0
+    ordered = sorted(events, key=lambda item: (item.occurred_at, item.id))
+    total = 0
+    for index, event in enumerate(ordered):
+        if not match_event(event):
+            continue
+        current_time = _parse_timestamp(event.occurred_at)
+        if index + 1 < len(ordered):
+            next_time = _parse_timestamp(ordered[index + 1].occurred_at)
+            delta = int((next_time - current_time).total_seconds())
+        else:
+            delta = min_step_seconds
+        if delta <= 0:
+            continue
+        if delta > max_gap_seconds:
+            continue
+        total += max(delta, min_step_seconds)
+    return total
+
+
+def _filter_events(
+    events: list[Event],
+    *,
+    target_domains: set[str],
+    app_hint: str | None,
+) -> list[Event]:
+    if target_domains:
+        filtered = [
+            event
+            for event in events
+            if any(_event_matches_domain(event, domain) for domain in target_domains)
+        ]
+        if filtered:
+            return filtered
+    if app_hint:
+        filtered = [event for event in events if _event_matches_app(event, app_hint)]
+        if filtered:
+            return filtered
+    return events
+
+
+def _span_matches_domain(span: ActivitySpan, domain: str) -> bool:
+    if not domain:
+        return False
+    span_domain = (_domain(span.url) or "").lower()
+    if span_domain == domain:
+        return True
+    if span_domain.endswith(f".{domain}"):
+        return True
+    label = _display_label(span).lower()
+    return domain in label
+
+
+def _event_matches_domain(event: Event, domain: str) -> bool:
+    if not domain:
+        return False
+    event_domain = (_domain(event.url) or "").lower()
+    if event_domain == domain:
+        return True
+    if event_domain.endswith(f".{domain}"):
+        return True
+    return domain in event.searchable_text.lower()
 
 
 def _event_label(event: Event) -> str:
@@ -255,14 +369,13 @@ def _time_window_for_query(query: str) -> tuple[datetime | None, datetime | None
         end = datetime.combine(today, time.max)
         label = "this week"
     else:
-        day = today
+        day = None
         if "yesterday" in text:
             day = today - timedelta(days=1)
             label = "yesterday"
         elif "today" in text:
+            day = today
             label = "today"
-        start = datetime.combine(day, time.min)
-        end = datetime.combine(day, time.max)
 
         for bucket_label, bucket_start, bucket_end in (
             ("morning", time(5, 0), time(11, 59, 59)),
@@ -271,6 +384,8 @@ def _time_window_for_query(query: str) -> tuple[datetime | None, datetime | None
             ("tonight", time(18, 0), time(23, 59, 59)),
         ):
             if bucket_label in text:
+                if day is None:
+                    day = today
                 start = datetime.combine(day, bucket_start)
                 end = datetime.combine(day, bucket_end)
                 label = f"{label} {bucket_label}".strip() if label else f"this {bucket_label}"
@@ -278,6 +393,8 @@ def _time_window_for_query(query: str) -> tuple[datetime | None, datetime | None
 
         around_match = re.search(r"\b(?:around|at)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", text)
         if around_match:
+            if day is None:
+                day = today
             hour = int(around_match.group(1))
             minute = int(around_match.group(2) or 0)
             meridiem = around_match.group(3)
@@ -289,6 +406,9 @@ def _time_window_for_query(query: str) -> tuple[datetime | None, datetime | None
             start = center - timedelta(minutes=45)
             end = center + timedelta(minutes=45)
             label = f"{label} around {_format_clock(center)}".strip() if label else f"around {_format_clock(center)}"
+        elif day is not None and start is None and end is None:
+            start = datetime.combine(day, time.min)
+            end = datetime.combine(day, time.max)
 
     if start and end and start > end:
         start, end = end, start
@@ -342,7 +462,13 @@ def _fuzzy_overlap(query_tokens: list[str], event_tokens: set[str]) -> float:
     return score
 
 
-def _rank_events(query: str, events: list[Event]) -> list[EventMatch]:
+def _rank_events(
+    query: str,
+    events: list[Event],
+    *,
+    target_domains: set[str] | None = None,
+    app_hint: str | None = None,
+) -> list[EventMatch]:
     query_tokens = _meaningful_tokens(query)
     query_embedding = embed_text(query)
     normalized_query = " ".join(tokenize(query))
@@ -367,6 +493,10 @@ def _rank_events(query: str, events: list[Event]) -> list[EventMatch]:
             for token in query_tokens
             if len(token) >= 3
         )
+        domain_match = False
+        if target_domains:
+            domain_match = any(_event_matches_domain(event, target) for target in target_domains)
+        app_match = _event_matches_app(event, app_hint)
         try:
             age_hours = max((now - _parse_timestamp(event.occurred_at)).total_seconds() / 3600.0, 0.0)
         except ValueError:
@@ -379,9 +509,17 @@ def _rank_events(query: str, events: list[Event]) -> list[EventMatch]:
             + (min(fuzzy_score, 2.0) * 0.08)
             + (0.18 if phrase_match else 0.0)
             + (0.16 if entity_match else 0.0)
+            + (0.22 if domain_match else 0.0)
+            + (0.16 if app_match else 0.0)
             + recency_bonus
             + freshness_bonus
         )
+        if target_domains and not domain_match:
+            if semantic_score < 0.45 and lexical_score < 0.5 and fuzzy_score < 0.6:
+                continue
+            score *= 0.45
+        if app_hint and not app_match:
+            score *= 0.7
         if query_tokens and lexical_score == 0 and fuzzy_score == 0 and semantic_score < 0.18:
             continue
         if score <= 0.12:
@@ -450,11 +588,18 @@ def _context_label(event: Event) -> str:
     return _friendly_app_name(event.application)
 
 
-def _context_summary(events: list[Event], exclude_ids: set[int]) -> str | None:
+def _context_summary(
+    events: list[Event],
+    exclude_ids: set[int],
+    *,
+    context_filter=None,
+) -> str | None:
     labels: list[str] = []
     seen: set[str] = set()
     for event in events:
         if event.id in exclude_ids:
+            continue
+        if context_filter is not None and not context_filter(event):
             continue
         label = _context_label(event)
         key = label.casefold()
@@ -613,11 +758,18 @@ def _match_reason(match: EventMatch | None) -> str:
     return "Relevant local activity"
 
 
-def _build_spans(ranked: list[EventMatch]) -> list[ActivitySpan]:
-    top_matches = ranked[:64]
+def _build_spans(
+    ranked: list[EventMatch],
+    *,
+    all_events: list[Event] | None = None,
+    target_domains: set[str] | None = None,
+    app_hint: str | None = None,
+) -> list[ActivitySpan]:
+    top_matches = ranked[:200]
     score_by_id = {match.event.id: match.score for match in top_matches}
     match_by_id = {match.event.id: match for match in top_matches}
-    ordered = sorted((match.event for match in top_matches), key=lambda item: (item.occurred_at, item.id))
+    source_events = all_events if all_events is not None else [match.event for match in top_matches]
+    ordered = sorted(source_events, key=lambda item: (item.occurred_at, item.id))
     spans: list[ActivitySpan] = []
     current_events: list[Event] = []
     current_key: tuple[str, str, str] | None = None
@@ -634,15 +786,40 @@ def _build_spans(ranked: list[EventMatch]) -> list[ActivitySpan]:
         else:
             end_at = max(next_start, start_at + timedelta(seconds=20))
         duration_seconds = int((end_at - start_at).total_seconds())
-        span_score = max(score_by_id.get(event.id, 0.0) for event in current_events)
+        span_scores = [score_by_id.get(event.id, 0.0) for event in current_events]
+        span_score = max(span_scores) if span_scores else 0.0
+        if span_score <= 0.0:
+            if target_domains and not any(
+                _event_matches_domain(event, domain)
+                for event in current_events
+                for domain in target_domains
+            ):
+                current_events = []
+                current_key = None
+                return
+            if app_hint and not any(_event_matches_app(event, app_hint) for event in current_events):
+                current_events = []
+                current_key = None
+                return
+            if not target_domains and not app_hint:
+                current_events = []
+                current_key = None
+                return
         current_ids = {event.id for event in current_events}
         before_events, after_events = list_events_around(
             first.occurred_at,
             before_limit=6,
             after_limit=6,
         )
-        before_context = _context_summary(before_events, current_ids)
-        after_context = _context_summary(after_events, current_ids)
+        context_filter = None
+        if target_domains:
+            context_filter = lambda event: any(
+                _event_matches_domain(event, domain) for domain in target_domains
+            )
+        elif app_hint:
+            context_filter = lambda event: _event_matches_app(event, app_hint)
+        before_context = _context_summary(before_events, current_ids, context_filter=context_filter)
+        after_context = _context_summary(after_events, current_ids, context_filter=context_filter)
         display_label = _event_label(best_event)
         session_title = _session_title(
             display_label,
@@ -695,7 +872,7 @@ def _build_spans(ranked: list[EventMatch]) -> list[ActivitySpan]:
             continue
         previous_time = _parse_timestamp(current_events[-1].occurred_at)
         gap_seconds = int((event_time - previous_time).total_seconds())
-        if current_key == event_key and gap_seconds <= 240:
+        if current_key == event_key and gap_seconds <= 360:
             current_events.append(event)
         else:
             flush(event_time)
@@ -741,6 +918,32 @@ def _last_time_query(query: str) -> bool:
 def _listing_query(query: str) -> bool:
     text = query.lower()
     return text.startswith("which ") or "what apps" in text or "what sites" in text
+
+
+def _detect_intent(query: str) -> str:
+    if _duration_query(query):
+        return "duration"
+    if _last_time_query(query):
+        return "last_time"
+    if _yes_no_query(query):
+        return "yes_no"
+    if _listing_query(query):
+        return "listing"
+    contextual_kind, _ = _contextual_recall_query(query)
+    if contextual_kind:
+        return "context"
+    return "open"
+
+
+def _low_confidence(spans: list[ActivitySpan]) -> bool:
+    if not spans:
+        return True
+    top = spans[0].relevance
+    if top < 0.2:
+        return True
+    if len(spans) > 1 and top < 0.3 and (top - spans[1].relevance) < 0.05:
+        return True
+    return False
 
 
 def _contextual_recall_query(query: str) -> tuple[str | None, str | None]:
@@ -809,14 +1012,20 @@ def _flow_phrase(span: ActivitySpan) -> str:
     return f"you were in {flow.lower()}"
 
 
-def _memory_summary(span: ActivitySpan, time_scope: str | None) -> str:
+def _memory_summary(
+    span: ActivitySpan,
+    time_scope: str | None,
+    *,
+    include_context: bool = True,
+) -> str:
     pieces: list[str] = []
     if time_scope:
         pieces.append(f"In {time_scope},")
     pieces.append(f"the strongest local moment suggests {_flow_phrase(span)}")
-    hint = _moment_hint(span)
-    if hint:
-        pieces.append(hint)
+    if include_context:
+        hint = _moment_hint(span)
+        if hint:
+            pieces.append(hint)
     return " ".join(pieces).replace(" ,", ",") + "."
 
 
@@ -850,18 +1059,50 @@ def _query_summary(spans: list[ActivitySpan], time_scope: str | None) -> str:
     return f"{count_text}. Top matches include {', '.join(labels[:-1])}, and {labels[-1]}."
 
 
-def _build_related_queries(query: str, spans: list[ActivitySpan], time_scope: str | None) -> list[str]:
+def _duration_summary(
+    *,
+    time_scope: str | None,
+    label: str | None,
+    best_span: ActivitySpan | None,
+) -> str:
+    scope = f" in {time_scope}" if time_scope else ""
+    if label:
+        base = f"Based on local activity for {label}{scope}."
+    else:
+        base = f"Based on local activity{scope}."
+    if best_span:
+        return f"{base} Best matching moment: {best_span.session_title}."
+    return base
+
+
+def _build_related_queries(
+    query: str,
+    spans: list[ActivitySpan],
+    time_scope: str | None,
+    *,
+    target_domains: set[str] | None = None,
+    app_hint: str | None = None,
+) -> list[str]:
     prompts: list[str] = []
+    target_label = None
+    if target_domains:
+        target_label = sorted(target_domains)[0]
+    elif app_hint:
+        target_label = app_hint
     for span in spans[:3]:
         label = _display_label(span)
         app = _friendly_app_name(span.application)
-        prompts.extend(_moment_follow_ups(span, time_scope))
+        if not target_label:
+            prompts.extend(_moment_follow_ups(span, time_scope))
         if span.url:
             domain = _domain(span.url) or label
             prompts.append(f"How much time did I spend on {domain} today?")
             prompts.append(f"When did I last use {domain}?")
         prompts.append(f"When did I last use {app}?")
         prompts.append(f"Did I use {label} today?")
+    if target_label:
+        prompts.insert(0, f"When did I last use {target_label}?")
+        prompts.insert(1, f"How much time did I spend on {target_label} today?")
     if time_scope:
         prompts.append(f"What else was I doing {time_scope}?")
     prompts.append(f"What did I do after {query.strip('?')}?")
@@ -893,7 +1134,26 @@ def answer_query(query: str) -> QueryAnswer:
 
     start_at, end_at, time_scope = _time_window_for_query(query)
     candidates = _load_candidate_events(query, start_at, end_at)
-    ranked = _rank_events(query, candidates)
+    target_domains = _extract_domains(query)
+    app_hint = _extract_app_hint(query, candidates)
+    filtered_candidates = _filter_events(
+        candidates,
+        target_domains=target_domains,
+        app_hint=app_hint,
+    )
+    ranked = _rank_events(
+        query,
+        filtered_candidates,
+        target_domains=target_domains,
+        app_hint=app_hint,
+    )
+    if not ranked and filtered_candidates is not candidates:
+        ranked = _rank_events(
+            query,
+            candidates,
+            target_domains=target_domains,
+            app_hint=app_hint,
+        )
     if not ranked:
         return QueryAnswer(
             answer="I could not find a strong local memory for that yet.",
@@ -905,7 +1165,13 @@ def answer_query(query: str) -> QueryAnswer:
             related_queries=[],
         )
 
-    spans = _build_spans(ranked)
+    intent = _detect_intent(query)
+    spans = _build_spans(
+        ranked,
+        all_events=filtered_candidates,
+        target_domains=target_domains,
+        app_hint=app_hint,
+    )
     if not spans:
         return QueryAnswer(
             answer="I found events, but not enough structure to answer clearly yet.",
@@ -921,18 +1187,59 @@ def answer_query(query: str) -> QueryAnswer:
     if not relevant_spans:
         relevant_spans = spans[:4]
 
+    if target_domains:
+        domain_spans = [
+            span
+            for span in spans
+            if any(_span_matches_domain(span, domain) for domain in target_domains)
+        ]
+        if domain_spans:
+            relevant_spans = domain_spans
+
     summary = _query_summary(relevant_spans, time_scope)
-    related_queries = _build_related_queries(query, relevant_spans, time_scope)
+    related_queries = _build_related_queries(
+        query,
+        relevant_spans,
+        time_scope,
+        target_domains=target_domains,
+        app_hint=app_hint,
+    )
+    if intent in {"open", "listing"} and _low_confidence(relevant_spans):
+        return QueryAnswer(
+            answer="I do not have a strong local memory for that yet.",
+            summary="These are the closest local moments I could find.",
+            details_label="Show closest matches",
+            evidence=relevant_spans[:6],
+            time_scope_label=time_scope,
+            result_count=len(ranked),
+            related_queries=related_queries,
+        )
     contextual_kind, contextual_anchor = _contextual_recall_query(query)
 
     if contextual_kind and contextual_anchor:
         anchor_candidates = _load_candidate_events(contextual_anchor, start_at, end_at)
-        anchor_ranked = _rank_events(contextual_anchor, anchor_candidates)
-        anchor_spans = _build_spans(anchor_ranked) if anchor_ranked else []
+        anchor_domains = _extract_domains(contextual_anchor)
+        anchor_app_hint = _extract_app_hint(contextual_anchor, anchor_candidates)
+        anchor_ranked = _rank_events(
+            contextual_anchor,
+            anchor_candidates,
+            target_domains=anchor_domains,
+            app_hint=anchor_app_hint,
+        )
+        anchor_spans = (
+            _build_spans(
+                anchor_ranked,
+                all_events=anchor_candidates,
+                target_domains=anchor_domains,
+                app_hint=anchor_app_hint,
+            )
+            if anchor_ranked
+            else []
+        )
         if anchor_spans:
             anchor = anchor_spans[0]
             answer = "I could not recover enough surrounding context for that moment."
-            contextual_summary = _memory_summary(anchor, time_scope)
+            contextual_summary = _memory_summary(anchor, time_scope, include_context=not bool(target_domains))
             if contextual_kind == "before":
                 if anchor.before_context:
                     answer = anchor.before_context
@@ -957,18 +1264,55 @@ def answer_query(query: str) -> QueryAnswer:
             )
 
     if _duration_query(query):
-        total_seconds = sum(span.duration_seconds for span in relevant_spans)
+        duration_spans = relevant_spans
+        if target_domains:
+            filtered = [
+                span
+                for span in spans
+                if any(_span_matches_domain(span, domain) for domain in target_domains)
+            ]
+            if filtered:
+                duration_spans = filtered
+
+        start_text = start_at.isoformat(sep=" ", timespec="seconds") if start_at else None
+        end_text = end_at.isoformat(sep=" ", timespec="seconds") if end_at else None
+        duration_events = (
+            list_events_between(start_text, end_text, limit=4000)
+            if start_text or end_text
+            else list_recent_events(limit=1600)
+        )
+        if target_domains:
+            total_seconds = _estimate_duration_seconds(
+                duration_events,
+                match_event=lambda event: any(
+                    _event_matches_domain(event, domain) for domain in target_domains
+                ),
+            )
+        elif app_hint:
+            total_seconds = _estimate_duration_seconds(
+                duration_events,
+                match_event=lambda event: _event_matches_app(event, app_hint),
+            )
+        else:
+            total_seconds = sum(span.duration_seconds for span in duration_spans)
         answer = _format_duration(total_seconds)
         if time_scope:
             answer = f"{answer} in {time_scope}"
-        detail_summary = summary
-        if relevant_spans:
-            detail_summary = _memory_summary(relevant_spans[0], time_scope)
+        label = None
+        if target_domains:
+            label = sorted(target_domains)[0]
+        elif app_hint:
+            label = app_hint
+        detail_summary = _duration_summary(
+            time_scope=time_scope,
+            label=label,
+            best_span=duration_spans[0] if duration_spans else None,
+        )
         return QueryAnswer(
             answer=answer,
             summary=detail_summary,
             details_label="Show top matches",
-            evidence=relevant_spans[:6],
+            evidence=duration_spans[:6],
             time_scope_label=time_scope,
             result_count=len(ranked),
             related_queries=related_queries,
@@ -979,7 +1323,7 @@ def answer_query(query: str) -> QueryAnswer:
         answer = f"{_format_clock(span.start_at)} on {span.start_at.strftime('%b %d')}"
         return QueryAnswer(
             answer=answer,
-            summary=_memory_summary(span, time_scope),
+            summary=_memory_summary(span, time_scope, include_context=not bool(target_domains)),
             details_label="Show top matches",
             evidence=relevant_spans[:6],
             time_scope_label=time_scope,
@@ -991,9 +1335,13 @@ def answer_query(query: str) -> QueryAnswer:
         strongest = relevant_spans[0]
         threshold = 0.25 if time_scope else 0.31
         answer = "I do not have clear evidence for that."
+        summary = _memory_summary(strongest, time_scope, include_context=not bool(target_domains))
         if strongest.relevance >= threshold:
             answer = f"Yes, most likely around {_format_clock(strongest.start_at)}."
-            summary = _memory_summary(strongest, time_scope)
+        else:
+            summary = (
+                f"I did not find a strong signal, but the closest local moment suggests {_flow_phrase(strongest)}."
+            )
         return QueryAnswer(
             answer=answer,
             summary=summary,
@@ -1012,7 +1360,11 @@ def answer_query(query: str) -> QueryAnswer:
             labels = [_friendly_app_name(span.application) for span in relevant_spans[:5]]
         answer = ", ".join(labels[:5]) if labels else "I found matching local activity."
         if relevant_spans:
-            summary = _memory_summary(relevant_spans[0], time_scope)
+            summary = _memory_summary(
+                relevant_spans[0],
+                time_scope,
+                include_context=not bool(target_domains),
+            )
         return QueryAnswer(
             answer=answer,
             summary=summary,
@@ -1027,7 +1379,11 @@ def answer_query(query: str) -> QueryAnswer:
     if time_scope and len(_meaningful_tokens(query)) <= 4:
         phrases = [_summarize_detail(span) for span in top_spans]
         answer = " ; ".join(phrases)
-        summary = _memory_summary(top_spans[0], time_scope)
+        summary = _memory_summary(
+            top_spans[0],
+            time_scope,
+            include_context=not bool(target_domains),
+        )
     else:
         labels = _unique_session_titles(top_spans, limit=3)
         if not labels:
@@ -1042,7 +1398,11 @@ def answer_query(query: str) -> QueryAnswer:
             lowered = [label.lower() for label in labels]
             answer = f"I found local moments around {', '.join(lowered[:-1])}, and {lowered[-1]}."
         if top_spans:
-            summary = _memory_summary(top_spans[0], time_scope)
+            summary = _memory_summary(
+                top_spans[0],
+                time_scope,
+                include_context=not bool(target_domains),
+            )
     return QueryAnswer(
         answer=answer,
         summary=summary,
@@ -1250,11 +1610,14 @@ def autocomplete_suggestions(prefix: str, limit: int = 5) -> list[SearchSuggesti
     }
 
     candidates: list[SearchSuggestion] = []
-    for key, suggestions in intent_map.items():
-        if lower.startswith(key):
-            candidates.extend(suggestions)
-            break
-    candidates.extend(entity_suggestions)
+    if token_matches and entity_suggestions:
+        candidates.extend(entity_suggestions)
+    else:
+        for key, suggestions in intent_map.items():
+            if lower.startswith(key):
+                candidates.extend(suggestions)
+                break
+        candidates.extend(entity_suggestions)
     if not candidates:
         candidates.extend(dynamic_suggestions(limit=limit))
 

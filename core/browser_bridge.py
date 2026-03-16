@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -8,6 +9,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BRIDGE_HOST = "127.0.0.1"
 BRIDGE_PORT = 38453
+MAX_TABS = 64
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -35,7 +39,7 @@ class BrowserStateStore:
         current_title = None
         current_url = None
 
-        for item in tabs:
+        for item in tabs[:MAX_TABS]:
             if not isinstance(item, dict):
                 continue
             title = str(item.get("title", "")).strip()
@@ -111,16 +115,23 @@ class BrowserBridgeServer(threading.Thread):
         super().__init__(daemon=True)
         self.store = store
         self.httpd: ThreadingHTTPServer | None = None
+        self.error: str | None = None
+        self.running = False
 
     def run(self) -> None:
         _BridgeHandler.store = self.store
         try:
             self.httpd = ThreadingHTTPServer((BRIDGE_HOST, BRIDGE_PORT), _BridgeHandler)
+            self.running = True
             self.httpd.serve_forever(poll_interval=0.5)
-        except OSError:
+        except OSError as exc:
+            self.error = str(exc)
+            logger.exception("Browser bridge failed to start")
             self.httpd = None
+            self.running = False
 
     def stop(self) -> None:
         if self.httpd is not None:
             self.httpd.shutdown()
             self.httpd.server_close()
+        self.running = False

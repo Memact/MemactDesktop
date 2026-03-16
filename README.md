@@ -1,5 +1,7 @@
 # Memact
 
+Version: v0.0
+
 Memact is a private desktop memory engine for personal actions.
 
 It continuously records local action events on your Windows machine, builds a local semantic memory index, and lets you ask natural-language questions such as:
@@ -9,16 +11,14 @@ It continuously records local action events on your Windows machine, builds a lo
 - How much time did I spend on youtube.com today?
 - Did I look at the grocery order?
 
-Memact is designed around one interaction:
-
-`Ask Memact...`
+Memact is designed around one interaction: `Ask Memact...`
 
 ## Product principles
 
 - local only
 - no cloud services
 - no external APIs
-- no remote LLM calls
+- no remote model calls
 - append-only event history
 - semantic search over actions, not dashboards
 
@@ -69,7 +69,7 @@ The desktop app intentionally stays minimal:
 
 ## Browser extension
 
-Memact includes a local extension in [extension/memact](C:\Users\sujay\Downloads\memact\extension\memact) for Chromium-based browsers.
+Memact includes a local extension in `extension/memact` for Chromium-based browsers.
 
 When enabled, it sends the current window's tab data to the local Memact bridge at `http://127.0.0.1:38453`.
 
@@ -105,3 +105,7 @@ python main.py
 - This is a Windows-first prototype.
 - The semantic engine is fully local.
 - Exact app restoration is no longer the main product promise; Memact is focused on remembering and answering questions about actions.
+
+## License
+
+Memact is proprietary and confidential. See `LICENSE` for details.

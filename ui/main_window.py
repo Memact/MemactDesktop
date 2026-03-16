@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 
@@ -45,7 +46,10 @@ from ui.window_effects import apply_native_window_theme
 
 
 SEARCH_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "search_icon.svg"
+ENTER_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "enter_icon.svg"
 EXTENSION_DIR = Path(__file__).resolve().parent.parent / "extension" / "memact"
+
+logger = logging.getLogger(__name__)
 
 
 def _domain_chip(url: str | None) -> str | None:
@@ -67,6 +71,7 @@ def _duration_chip(seconds: int) -> str:
 
 class SignalBridge(QObject):
     runtime_ready = pyqtSignal()
+    runtime_failed = pyqtSignal(str)
     new_event = pyqtSignal()
     query_answer_ready = pyqtSignal(object, int, str)
     suggestions_ready = pyqtSignal(object, int, str, str)
@@ -80,6 +85,7 @@ class SearchInput(QLineEdit):
     accept_selection = pyqtSignal()
     commit_selection = pyqtSignal()
     escape_pressed = pyqtSignal()
+    typed_over_suggestion = pyqtSignal(str)
 
     def focusInEvent(self, event) -> None:  # noqa: N802
         super().focusInEvent(event)
@@ -90,6 +96,14 @@ class SearchInput(QLineEdit):
         self.blurred.emit()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
+        if (
+            bool(self.property("suggestionSelected"))
+            and event.text()
+            and not (event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier))
+        ):
+            self.typed_over_suggestion.emit(event.text())
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_Down:
             self.navigate_down.emit()
             event.accept()
@@ -369,6 +383,7 @@ class MainWindow(QMainWindow):
 
         self._bridge = SignalBridge()
         self._bridge.runtime_ready.connect(self._finish_runtime_initialization)
+        self._bridge.runtime_failed.connect(self._handle_runtime_failed)
         self._bridge.new_event.connect(self._handle_new_event)
         self._bridge.query_answer_ready.connect(self._handle_query_answer_ready)
         self._bridge.suggestions_ready.connect(self._handle_suggestions_ready)
@@ -390,7 +405,7 @@ class MainWindow(QMainWindow):
 
         self._suggestion_timer = QTimer(self)
         self._suggestion_timer.setSingleShot(True)
-        self._suggestion_timer.setInterval(120)
+        self._suggestion_timer.setInterval(60)
         self._suggestion_timer.timeout.connect(self._kickoff_suggestion_refresh)
 
         self._hover_reset_timer = QTimer(self)
@@ -473,9 +488,13 @@ class MainWindow(QMainWindow):
                 background: rgba(5, 16, 79, 0.975);
                 border: 1px solid rgba(255, 255, 255, 0.14);
                 border-top: none;
+                border-top-left-radius: 0px;
+                border-top-right-radius: 0px;
                 border-bottom-left-radius: 24px;
                 border-bottom-right-radius: 24px;
-                margin-top: -2px;
+            }
+            QFrame#SuggestionDock[attached="true"] {
+                margin-top: -3px;
             }
             QScrollArea#SuggestionScroll {
                 background: transparent;
@@ -674,6 +693,11 @@ class MainWindow(QMainWindow):
             """
         )
 
+        orb_size = 62
+        menu_button_size = 46
+        results_search_width = 706
+        results_header_height = 72
+
         root = QWidget(self)
         self.root = root
         root.setObjectName("Root")
@@ -686,28 +710,28 @@ class MainWindow(QMainWindow):
         top_bar.setSpacing(0)
         self.back_orb = QFrame()
         self.back_orb.setObjectName("MenuOrb")
-        self.back_orb.setFixedSize(62, 62)
+        self.back_orb.setFixedSize(orb_size, orb_size)
         back_layout = QVBoxLayout(self.back_orb)
         back_layout.setContentsMargins(8, 8, 8, 8)
         self.back_button = QPushButton("\u2190")
         self.back_button.setObjectName("MenuButton")
-        self.back_button.setFixedSize(46, 46)
+        self.back_button.setFixedSize(menu_button_size, menu_button_size)
         self.back_button.clicked.connect(self._go_home)
-        back_layout.addWidget(self.back_button)
+        back_layout.addWidget(self.back_button, 0, Qt.AlignmentFlag.AlignCenter)
 
         self.reload_orb = QFrame()
         self.reload_orb.setObjectName("MenuOrb")
-        self.reload_orb.setFixedSize(62, 62)
+        self.reload_orb.setFixedSize(orb_size, orb_size)
         reload_layout = QVBoxLayout(self.reload_orb)
         reload_layout.setContentsMargins(8, 8, 8, 8)
         self.reload_button = QPushButton("\u21bb")
         self.reload_button.setObjectName("MenuButton")
-        self.reload_button.setFixedSize(46, 46)
+        self.reload_button.setFixedSize(menu_button_size, menu_button_size)
         self.reload_button.clicked.connect(self._reload_query)
-        reload_layout.addWidget(self.reload_button)
+        reload_layout.addWidget(self.reload_button, 0, Qt.AlignmentFlag.AlignCenter)
 
         self.compact_brand_host = QWidget()
-        self.compact_brand_host.setFixedWidth(62)
+        self.compact_brand_host.setFixedWidth(orb_size)
         brand_layout = QVBoxLayout(self.compact_brand_host)
         brand_layout.setContentsMargins(0, 0, 0, 0)
         self.compact_brand = QLabel("m")
@@ -716,48 +740,67 @@ class MainWindow(QMainWindow):
         compact_brand_font = brand_font(34)
         compact_brand_font.setBold(True)
         self.compact_brand.setFont(compact_brand_font)
-        brand_layout.addWidget(self.compact_brand)
+        brand_layout.addWidget(self.compact_brand, 0, Qt.AlignmentFlag.AlignCenter)
 
         self.results_search_stack = QWidget()
-        self.results_search_stack.setFixedWidth(792)
+        self.results_search_stack.setFixedWidth(results_search_width)
         self.results_search_layout = QVBoxLayout(self.results_search_stack)
         self.results_search_layout.setContentsMargins(0, 0, 0, 0)
         self.results_search_layout.setSpacing(0)
 
         self.results_header = QWidget()
+        self.results_header.setFixedHeight(results_header_height)
         results_header_layout = QHBoxLayout(self.results_header)
         results_header_layout.setContentsMargins(0, 0, 0, 0)
         results_header_layout.setSpacing(14)
-        results_header_layout.addWidget(self.compact_brand_host)
-        results_header_layout.addWidget(self.back_orb)
-        results_header_layout.addWidget(self.reload_orb)
-        results_header_layout.addWidget(self.results_search_stack, 0)
+        results_header_layout.addWidget(self.compact_brand_host, 0, Qt.AlignmentFlag.AlignVCenter)
+        results_header_layout.addWidget(self.back_orb, 0, Qt.AlignmentFlag.AlignVCenter)
+        results_header_layout.addWidget(self.reload_orb, 0, Qt.AlignmentFlag.AlignVCenter)
+        results_header_layout.addWidget(self.results_search_stack, 0, Qt.AlignmentFlag.AlignVCenter)
         self.results_menu_orb = QFrame()
         self.results_menu_orb.setObjectName("MenuOrb")
-        self.results_menu_orb.setFixedSize(62, 62)
+        self.results_menu_orb.setFixedSize(orb_size, orb_size)
         results_menu_layout = QVBoxLayout(self.results_menu_orb)
         results_menu_layout.setContentsMargins(8, 8, 8, 8)
         self.results_menu_button = QPushButton("...")
         self.results_menu_button.setObjectName("MenuButton")
-        self.results_menu_button.setFixedSize(46, 46)
+        self.results_menu_button.setFixedSize(menu_button_size, menu_button_size)
         self.results_menu_button.clicked.connect(self._show_menu)
-        results_menu_layout.addWidget(self.results_menu_button)
-        results_header_layout.addWidget(self.results_menu_orb)
+        results_menu_layout.addWidget(self.results_menu_button, 0, Qt.AlignmentFlag.AlignCenter)
+        results_header_layout.addWidget(self.results_menu_orb, 0, Qt.AlignmentFlag.AlignVCenter)
         self.results_header.hide()
-        top_bar.addWidget(self.results_header, 0, Qt.AlignmentFlag.AlignLeft)
-        top_bar.addSpacing(16)
+        top_bar.addWidget(
+            self.results_header,
+            0,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
         self.home_menu_orb = QFrame()
         self.home_menu_orb.setObjectName("MenuOrb")
-        self.home_menu_orb.setFixedSize(62, 62)
+        self.home_menu_orb.setFixedSize(orb_size, orb_size)
         menu_layout = QVBoxLayout(self.home_menu_orb)
         menu_layout.setContentsMargins(8, 8, 8, 8)
         self.menu_button = QPushButton("...")
         self.menu_button.setObjectName("MenuButton")
-        self.menu_button.setFixedSize(46, 46)
+        self.menu_button.setFixedSize(menu_button_size, menu_button_size)
         self.menu_button.clicked.connect(self._show_menu)
-        menu_layout.addWidget(self.menu_button)
-        top_bar.addStretch(1)
-        top_bar.addWidget(self.home_menu_orb, 0, Qt.AlignmentFlag.AlignRight)
+        menu_layout.addWidget(self.menu_button, 0, Qt.AlignmentFlag.AlignCenter)
+        home_slot_width = (
+            orb_size * 4
+            + results_search_width
+            + results_header_layout.spacing() * 4
+        )
+        self.home_menu_slot = QWidget()
+        self.home_menu_slot.setFixedWidth(home_slot_width)
+        self.home_menu_slot.setFixedHeight(results_header_height)
+        home_slot_layout = QHBoxLayout(self.home_menu_slot)
+        home_slot_layout.setContentsMargins(0, 0, 0, 0)
+        home_slot_layout.addStretch(1)
+        home_slot_layout.addWidget(self.home_menu_orb, 0, Qt.AlignmentFlag.AlignVCenter)
+        top_bar.addWidget(
+            self.home_menu_slot,
+            0,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
         layout.addLayout(top_bar)
 
         self.top_spacer = QSpacerItem(
@@ -807,6 +850,7 @@ class MainWindow(QMainWindow):
         self.search_input.accept_selection.connect(self._handle_accept_selection)
         self.search_input.commit_selection.connect(self._commit_selected_suggestion)
         self.search_input.escape_pressed.connect(self._dismiss_suggestions)
+        self.search_input.typed_over_suggestion.connect(self._replace_suggestion_with_typed)
         search_layout.addWidget(self.search_input, 1)
 
         self.search_button = QPushButton("")
@@ -814,8 +858,10 @@ class MainWindow(QMainWindow):
         self.search_button.setObjectName("SearchButton")
         self.search_button.setFixedSize(34, 34)
         self.search_button.clicked.connect(self._submit_query)
+        self._search_icon = QIcon(str(SEARCH_ICON_PATH)) if SEARCH_ICON_PATH.exists() else None
+        self._enter_icon = QIcon(str(ENTER_ICON_PATH)) if ENTER_ICON_PATH.exists() else None
         if SEARCH_ICON_PATH.exists():
-            self.search_button.setIcon(QIcon(str(SEARCH_ICON_PATH)))
+            self.search_button.setIcon(self._search_icon)
             self.search_button.setIconSize(self.search_button.size())
         search_layout.addWidget(self.search_button, 0, Qt.AlignmentFlag.AlignVCenter)
         self.search_shell_base_margins = (26, 16, 18, 16)
@@ -922,6 +968,10 @@ class MainWindow(QMainWindow):
         self.suggestion_dock.hide()
 
     def _build_tray(self) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            QApplication.instance().setQuitOnLastWindowClosed(True)
+            self.tray = None
+            return
         self.tray = QSystemTrayIcon(app_icon(64), self)
         self.tray.setToolTip("Memact is privately recording local actions")
         tray_menu = QMenu(self)
@@ -963,7 +1013,12 @@ class MainWindow(QMainWindow):
         threading.Thread(target=self._initialize_runtime_worker, daemon=True).start()
 
     def _initialize_runtime_worker(self) -> None:
-        init_db()
+        try:
+            init_db()
+        except Exception as exc:
+            logger.exception("Failed to initialize local database")
+            self._bridge.runtime_failed.emit(str(exc))
+            return
         self._bridge.runtime_ready.emit()
 
     def _finish_runtime_initialization(self) -> None:
@@ -974,12 +1029,26 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(150, self._start_background_services)
         QTimer.singleShot(900, self._maybe_show_browser_setup)
 
+    def _handle_runtime_failed(self, message: str) -> None:
+        self.status_text.setText("Memact could not start the local database.")
+        self._show_info_dialog(
+            "Memact",
+            f"The local database failed to start. Details: {message}",
+        )
+
     def _start_background_services(self) -> None:
         if self._services_started:
             return
         self.browser_bridge.start()
         self.monitor.start()
         self._services_started = True
+        QTimer.singleShot(1200, self._check_bridge_startup)
+
+    def _check_bridge_startup(self) -> None:
+        if self.browser_bridge.error:
+            self.status_text.setText(
+                "Browser bridge could not start. The extension may not connect."
+            )
 
     def _refresh_suggestions(self) -> None:
         if not self._db_ready:
@@ -988,6 +1057,12 @@ class MainWindow(QMainWindow):
             self.suggestion_dock.hide()
             return
         self._suggestion_timer.start()
+
+    def _refresh_suggestions_immediately(self) -> None:
+        if not self._db_ready or not self.search_input.hasFocus():
+            return
+        self._suggestion_timer.stop()
+        self._kickoff_suggestion_refresh()
 
     def _set_search_active(self, active: bool) -> None:
         self._search_active = active
@@ -998,7 +1073,8 @@ class MainWindow(QMainWindow):
 
     def _handle_search_focus(self) -> None:
         self._set_search_active(True)
-        self._refresh_suggestions()
+        self._refresh_suggestions_immediately()
+        self._update_search_button()
 
     def _kickoff_suggestion_refresh(self) -> None:
         if not self._db_ready or not self.search_input.hasFocus():
@@ -1008,6 +1084,8 @@ class MainWindow(QMainWindow):
         if not text and self._cached_empty_suggestions is not None:
             self._render_suggestions(self._cached_empty_suggestions, heading=heading)
             return
+        self.suggestion_heading.setText(heading)
+        self.suggestion_heading.setVisible(bool(heading))
         request_id = self._suggestion_request_id + 1
         self._suggestion_request_id = request_id
         threading.Thread(
@@ -1017,7 +1095,11 @@ class MainWindow(QMainWindow):
         ).start()
 
     def _suggestion_worker(self, request_id: int, text: str, heading: str) -> None:
-        suggestions = autocomplete_suggestions(text, limit=5) if text else dynamic_suggestions(limit=4)
+        try:
+            suggestions = autocomplete_suggestions(text, limit=5) if text else dynamic_suggestions(limit=4)
+        except Exception:
+            logger.exception("Suggestion worker failed")
+            suggestions = []
         self._bridge.suggestions_ready.emit(suggestions, request_id, text, heading)
 
     def _handle_suggestions_ready(
@@ -1077,7 +1159,7 @@ class MainWindow(QMainWindow):
             if widget is not None:
                 widget.deleteLater()
         self.suggestion_heading.setText(heading)
-        self.suggestion_heading.setVisible(False)
+        self.suggestion_heading.setVisible(bool(heading))
         for suggestion in suggestions:
             card = SuggestionCard(suggestion)
             card.setMinimumHeight(self._suggestion_row_height)
@@ -1102,6 +1184,11 @@ class MainWindow(QMainWindow):
         if heading_height:
             dock_height += heading_height + self.suggestion_dock.layout().spacing()
         self.suggestion_dock.setFixedHeight(max(dock_height, 0))
+        dock_width = self.search_shell.width()
+        if dock_width:
+            self.suggestion_dock.setMinimumWidth(dock_width)
+            self.suggestion_dock.setMaximumWidth(dock_width)
+            self.suggestion_dock.setFixedWidth(dock_width)
         self._set_hero_shifted(bool(suggestions))
         if self._results_mode and self.suggestion_dock.parent() is not self.root:
             self.suggestion_dock.setParent(self.root)
@@ -1112,9 +1199,24 @@ class MainWindow(QMainWindow):
 
     def _set_search_attached(self, attached: bool) -> None:
         self.search_shell.setProperty("attached", attached)
+        self.suggestion_dock.setProperty("attached", attached)
         self.search_shell.style().unpolish(self.search_shell)
         self.search_shell.style().polish(self.search_shell)
+        self.suggestion_dock.style().unpolish(self.suggestion_dock)
+        self.suggestion_dock.style().polish(self.suggestion_dock)
         self.search_shell.update()
+        self.suggestion_dock.update()
+
+    def _update_search_button(self) -> None:
+        has_text = bool(self.search_input.text())
+        if has_text and self.search_input.hasFocus():
+            self.search_button.setText("")
+            if self._enter_icon is not None:
+                self.search_button.setIcon(self._enter_icon)
+        else:
+            self.search_button.setText("")
+            if self._search_icon is not None:
+                self.search_button.setIcon(self._search_icon)
 
     def _set_results_mode(self, active: bool) -> None:
         if self._results_mode == active:
@@ -1126,14 +1228,14 @@ class MainWindow(QMainWindow):
         if active:
             self.title_label.hide()
             self.results_header.show()
-            self.home_menu_orb.hide()
+            self.home_menu_slot.hide()
             self.results_search_layout.addWidget(self.search_shell)
             self.top_spacer.changeSize(20, 8, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
             self.search_shell.setMinimumWidth(706)
             self.search_shell.setMaximumWidth(706)
         else:
             self.results_header.hide()
-            self.home_menu_orb.show()
+            self.home_menu_slot.show()
             self.title_label.show()
             self.center_layout.insertWidget(3, self.search_shell, 0, Qt.AlignmentFlag.AlignCenter)
             self.center_layout.insertWidget(4, self.suggestion_dock, 0, Qt.AlignmentFlag.AlignCenter)
@@ -1168,6 +1270,19 @@ class MainWindow(QMainWindow):
         self.search_input.setText(completion)
         self.search_input.blockSignals(False)
 
+    def _replace_suggestion_with_typed(self, text: str) -> None:
+        if not text:
+            return
+        base = self._typed_query_before_selection
+        next_text = f"{base}{text}"
+        self.search_input.setProperty("suggestionSelected", False)
+        self._set_preview_state(False)
+        self.search_input.blockSignals(True)
+        self.search_input.setText(next_text)
+        self.search_input.blockSignals(False)
+        self.search_input.setCursorPosition(len(next_text))
+        self._update_search_button()
+
     def _select_suggestion_by_completion(self, completion: str) -> None:
         for index, card in enumerate(self._visible_suggestion_cards):
             if card._completion == completion:
@@ -1193,6 +1308,7 @@ class MainWindow(QMainWindow):
         self.search_input.setText(self._typed_query_before_selection)
         self.search_input.blockSignals(False)
         self._set_preview_state(False)
+        self._update_search_button()
 
     def _select_next_suggestion(self) -> None:
         if not self.suggestion_dock.isVisible() or not self._visible_suggestion_cards:
@@ -1226,6 +1342,7 @@ class MainWindow(QMainWindow):
         self._typed_query_before_selection = completion
         self.search_input.setProperty("suggestionSelected", False)
         self._set_preview_state(False)
+        self._update_search_button()
 
     def _dismiss_suggestions(self) -> None:
         self.suggestion_dock.hide()
@@ -1237,6 +1354,7 @@ class MainWindow(QMainWindow):
             self.search_input.blockSignals(False)
         self._set_preview_state(False)
         self._selected_suggestion_index = -1
+        self._update_search_button()
 
     def _apply_suggestion(self, value: str) -> None:
         self._typed_query_before_selection = value
@@ -1248,6 +1366,7 @@ class MainWindow(QMainWindow):
         self.search_input.style().unpolish(self.search_input)
         self.search_input.style().polish(self.search_input)
         self.search_input.update()
+        self._update_search_button()
         self._submit_query()
 
     def _schedule_suggestion_hide(self) -> None:
@@ -1265,6 +1384,7 @@ class MainWindow(QMainWindow):
             self._set_search_active(False)
         self._set_hero_shifted(False)
         self._sync_back_button()
+        self._update_search_button()
 
     def _set_hero_shifted(self, shifted: bool) -> None:
         if self._hero_shifted == shifted:
@@ -1284,7 +1404,7 @@ class MainWindow(QMainWindow):
         self.suggestion_dock.setMaximumWidth(dock_width)
         self.suggestion_dock.resize(dock_width, self.suggestion_dock.height())
         x = anchor_pos.x()
-        y = anchor_pos.y() + self.search_shell.height() - 1
+        y = anchor_pos.y() + self.search_shell.height() - 3
         self.suggestion_dock.move(x, y)
         self.suggestion_dock.raise_()
         self.search_shell.raise_()
@@ -1313,14 +1433,18 @@ class MainWindow(QMainWindow):
         self.search_input.style().unpolish(self.search_input)
         self.search_input.style().polish(self.search_input)
         self.search_input.update()
+        self._update_search_button()
         self._sync_back_button()
         if text.strip():
             self._set_search_active(True)
-            self._suggestion_timer.start()
+            if len(text.strip()) <= 2:
+                self._refresh_suggestions_immediately()
+            else:
+                self._suggestion_timer.start()
         else:
             if self.search_input.hasFocus():
                 self._set_search_active(True)
-                self._refresh_suggestions()
+                self._refresh_suggestions_immediately()
             else:
                 self.suggestion_dock.hide()
                 self._set_search_attached(False)
@@ -1351,6 +1475,7 @@ class MainWindow(QMainWindow):
             self._typed_query_before_selection = ""
             self.search_input.clear()
             self.search_input.clearFocus()
+            self._update_search_button()
         self._set_search_active(False)
         self._set_hero_shifted(False)
         if self._db_ready:
@@ -1384,7 +1509,19 @@ class MainWindow(QMainWindow):
         ).start()
 
     def _query_worker(self, request_id: int, query: str) -> None:
-        answer = answer_query(query)
+        try:
+            answer = answer_query(query)
+        except Exception as exc:
+            logger.exception("Query worker failed")
+            answer = QueryAnswer(
+                answer="I hit a local error while searching.",
+                summary=f"Memact could not complete that query. Details: {exc}",
+                details_label="",
+                evidence=[],
+                time_scope_label=None,
+                result_count=0,
+                related_queries=[],
+            )
         self._bridge.query_answer_ready.emit(answer, request_id, query)
 
     def _handle_query_answer_ready(self, answer: QueryAnswer, request_id: int, query: str) -> None:
@@ -1402,6 +1539,7 @@ class MainWindow(QMainWindow):
         self.search_input.style().unpolish(self.search_input)
         self.search_input.style().polish(self.search_input)
         self.search_input.update()
+        self._update_search_button()
         self.answer_eyebrow.setText("LOCAL ANSWER" if not answer.time_scope_label else f"LOCAL ANSWER - {answer.time_scope_label.upper()}")
         self.answer_text.setText(answer.answer)
         self.answer_summary.setText(answer.summary)
@@ -1462,8 +1600,8 @@ class MainWindow(QMainWindow):
         if not self._db_ready:
             return
         self._cached_empty_suggestions = None
-        if self.search_input.hasFocus() and not self.search_input.text().strip():
-            self._refresh_suggestions()
+        if self.search_input.hasFocus():
+            self._refresh_suggestions_immediately()
         if self.isVisible() and not self.isMinimized():
             self.status_text.setText("Memory updated locally.")
 
@@ -1548,12 +1686,17 @@ class MainWindow(QMainWindow):
         if self._services_started:
             self.monitor.stop()
             self.browser_bridge.stop()
-        self.tray.hide()
+            if self.monitor.is_alive():
+                self.monitor.join(timeout=2)
+            if self.browser_bridge.is_alive():
+                self.browser_bridge.join(timeout=2)
+        if getattr(self, "tray", None) is not None:
+            self.tray.hide()
         self.close()
         QApplication.quit()
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        if self._quitting:
+        if self._quitting or getattr(self, "tray", None) is None:
             super().closeEvent(event)
             return
         event.ignore()

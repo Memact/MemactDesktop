@@ -16,12 +16,14 @@ from PyQt6.QtWidgets import QApplication
 
 sys.coinit_flags = 2
 
+from core.logging_utils import configure_logging
 from ui.fonts import body_font
 from ui.branding import app_icon
 from ui.main_window import MainWindow
 
 
 def main() -> int:
+    configure_logging()
     app = QApplication(sys.argv)
     app.setApplicationName("Memact")
     app.setFont(body_font(12))

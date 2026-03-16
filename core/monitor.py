@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+import logging
 import os
 import re
 import threading
@@ -18,6 +19,7 @@ from core.database import append_event
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 psapi = ctypes.windll.psapi
+logger = logging.getLogger(__name__)
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_VM_READ = 0x0010
@@ -338,6 +340,7 @@ class WindowMonitor(threading.Thread):
             tab_titles=[],
             tab_urls=[],
         )
+        self._last_error_at = 0.0
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -389,5 +392,8 @@ class WindowMonitor(threading.Thread):
                     elif now - self._last_recorded_at >= self.heartbeat_interval:
                         self._emit_event(snapshot, browser_context, "heartbeat")
             except Exception:
-                pass
+                now = time.monotonic()
+                if now - self._last_error_at > 30:
+                    logger.exception("Window monitor loop failed")
+                    self._last_error_at = now
             time.sleep(self.poll_interval)
