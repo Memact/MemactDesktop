@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QPoint, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QDesktopServices, QIcon
+from PyQt6.QtGui import QAction, QCursor, QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -287,16 +287,16 @@ class GlassInfoDialog(QDialog):
                 font-weight: 600;
             }
             QPushButton {
-                background: #0038ff;
+                background: rgba(121, 173, 255, 0.22);
                 color: #ffffff;
-                border: 1px solid #0038ff;
+                border: 1px solid rgba(121, 173, 255, 0.35);
                 border-radius: 14px;
                 padding: 10px 18px;
                 min-width: 110px;
                 font-size: 15px;
             }
             QPushButton:hover {
-                background: rgba(0, 56, 255, 0.84);
+                background: rgba(121, 173, 255, 0.3);
             }
             """
         )
@@ -449,7 +449,7 @@ class MainWindow(QMainWindow):
                 border: none;
                 padding: 0;
                 font-size: 24px;
-                selection-background-color: #0038ff;
+                selection-background-color: rgba(121, 173, 255, 0.35);
             }
             QLineEdit#SearchInput[empty="true"] {
                 color: rgba(255, 255, 255, 0.56);
@@ -533,12 +533,12 @@ class MainWindow(QMainWindow):
                 font-size: 12px;
             }
             QFrame#SearchShell {
-                background: rgba(255, 255, 255, 0.09);
+                background: rgba(255, 255, 255, 0.11);
                 border: 1px solid rgba(255, 255, 255, 0.14);
                 border-radius: 26px;
             }
             QFrame#SearchShell[active="true"] {
-                background: rgba(255, 255, 255, 0.13);
+                background: rgba(255, 255, 255, 0.14);
                 border: 1px solid rgba(121, 173, 255, 0.45);
             }
             QFrame#SearchShell[attached="true"] {
@@ -546,7 +546,7 @@ class MainWindow(QMainWindow):
                 border-bottom-right-radius: 10px;
             }
             QFrame#AnswerCard {
-                background: rgba(255, 255, 255, 0.09);
+                background: rgba(255, 255, 255, 0.11);
                 border: 1px solid rgba(255, 255, 255, 0.14);
                 border-radius: 28px;
             }
@@ -575,7 +575,7 @@ class MainWindow(QMainWindow):
                 text-align: left;
             }
             QPushButton#DetailsButton:hover {
-                color: #0038ff;
+                color: rgba(121, 173, 255, 0.95);
             }
             QScrollArea#EvidenceScroll {
                 background: transparent;
@@ -585,7 +585,7 @@ class MainWindow(QMainWindow):
                 background: transparent;
             }
             QFrame#EvidenceCard {
-                background: rgba(255, 255, 255, 0.1);
+                background: rgba(255, 255, 255, 0.085);
                 border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 18px;
             }
@@ -927,6 +927,7 @@ class MainWindow(QMainWindow):
         tray_menu = QMenu(self)
         tray_menu.setFont(body_font(12))
         tray_menu.setStyleSheet(self._menu_stylesheet())
+        tray_menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         show_action = QAction("Show", self)
         show_action.triggered.connect(self.show_window)
         quit_action = QAction("Quit", self)
@@ -934,13 +935,16 @@ class MainWindow(QMainWindow):
         tray_menu.addAction(show_action)
         tray_menu.addSeparator()
         tray_menu.addAction(quit_action)
-        self.tray.setContextMenu(tray_menu)
+        # Don't use setContextMenu() on Windows; it can force a native menu with square corners
+        # and OS-controlled placement (often expanding into the taskbar). We'll position it ourselves.
+        self.tray_menu = tray_menu
         self.tray.activated.connect(self._handle_tray_click)
         self.tray.show()
 
     def _build_menu(self) -> None:
         self.overflow_menu = QMenu(self)
         self.overflow_menu.setStyleSheet(self._menu_stylesheet())
+        self.overflow_menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         install_action = self.overflow_menu.addAction("Install Browser Extension")
         install_action.triggered.connect(self._open_browser_setup_from_menu)
         privacy_action = self.overflow_menu.addAction("Privacy Promise")
@@ -1483,11 +1487,50 @@ class MainWindow(QMainWindow):
 
     def _show_menu(self) -> None:
         anchor = self.results_menu_button if self._results_mode else self.menu_button
-        self.overflow_menu.popup(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+        global_down = anchor.mapToGlobal(anchor.rect().bottomLeft())
+        global_up = anchor.mapToGlobal(anchor.rect().topLeft())
+        screen = QApplication.screenAt(global_down) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else self.geometry()
+
+        self.overflow_menu.ensurePolished()
+        self.overflow_menu.adjustSize()
+        menu_size = self.overflow_menu.sizeHint()
+
+        x = global_down.x()
+        y = global_down.y()
+        if y + menu_size.height() > available.bottom():
+            y = global_up.y() - menu_size.height()
+
+        x = max(available.left(), min(x, available.right() - menu_size.width()))
+        y = max(available.top(), min(y, available.bottom() - menu_size.height()))
+        self.overflow_menu.popup(QPoint(x, y))
 
     def _handle_tray_click(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.show_window()
+            return
+        if reason != QSystemTrayIcon.ActivationReason.Context:
+            return
+        if not hasattr(self, "tray_menu"):
+            return
+
+        cursor_pos = QCursor.pos()
+        screen = QApplication.screenAt(cursor_pos) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else self.geometry()
+
+        self.tray_menu.ensurePolished()
+        self.tray_menu.adjustSize()
+        menu_size = self.tray_menu.sizeHint()
+
+        x = cursor_pos.x()
+        if cursor_pos.y() > available.center().y():
+            y = cursor_pos.y() - menu_size.height()
+        else:
+            y = cursor_pos.y()
+
+        x = max(available.left(), min(x, available.right() - menu_size.width()))
+        y = max(available.top(), min(y, available.bottom() - menu_size.height()))
+        self.tray_menu.popup(QPoint(x, y))
 
     def show_window(self) -> None:
         self.show()
@@ -1582,16 +1625,16 @@ class MainWindow(QMainWindow):
                 min-width: 340px;
             }
             QMessageBox QPushButton {
-                background: #0038ff;
+                background: rgba(121, 173, 255, 0.22);
                 color: #ffffff;
-                border: 1px solid #0038ff;
+                border: 1px solid rgba(121, 173, 255, 0.35);
                 border-radius: 12px;
                 padding: 9px 16px;
                 min-width: 96px;
                 font-size: 14px;
             }
             QMessageBox QPushButton:hover {
-                background: rgba(0, 56, 255, 0.84);
+                background: rgba(121, 173, 255, 0.3);
             }
             """
         )
