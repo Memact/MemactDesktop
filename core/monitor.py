@@ -340,6 +340,8 @@ class WindowMonitor(threading.Thread):
             tab_titles=[],
             tab_urls=[],
         )
+        self._last_snapshot: WindowSnapshot | None = None
+        self._last_browser_context: BrowserContext | None = None
         self._last_error_at = 0.0
 
     def stop(self) -> None:
@@ -360,6 +362,32 @@ class WindowMonitor(threading.Thread):
         self._last_recorded_at = time.monotonic()
         if self.on_new_event is not None:
             self.on_new_event()
+
+    def _classify_interaction(
+        self,
+        snapshot: WindowSnapshot,
+        browser_context: BrowserContext,
+    ) -> str:
+        if self._last_snapshot is None:
+            return "focus"
+        if snapshot.app_name.lower() != self._last_snapshot.app_name.lower():
+            return "app_switch"
+        last_context = self._last_browser_context
+        if (
+            browser_context.url
+            and last_context
+            and browser_context.url != last_context.url
+        ):
+            return "navigate"
+        if (
+            browser_context.current_title
+            and last_context
+            and browser_context.current_title != last_context.current_title
+        ):
+            return "tab_switch"
+        if snapshot.title.strip() != (self._last_snapshot.title or "").strip():
+            return "context_change"
+        return "focus"
 
     def run(self) -> None:
         while not self._stop_event.is_set():
@@ -382,15 +410,19 @@ class WindowMonitor(threading.Thread):
                         snapshot.app_name.lower(),
                         snapshot.title.strip().lower(),
                         (browser_context.url or "").strip().lower(),
-                        "|".join(browser_context.tab_titles[:6]).strip().lower(),
-                        "|".join(browser_context.tab_urls[:6]).strip().lower(),
+                        (browser_context.current_title or "").strip().lower(),
                     )
                     now = time.monotonic()
                     if fingerprint != self._last_fingerprint:
                         self._last_fingerprint = fingerprint
-                        self._emit_event(snapshot, browser_context, "focus")
+                        interaction_type = self._classify_interaction(snapshot, browser_context)
+                        self._emit_event(snapshot, browser_context, interaction_type)
+                        self._last_snapshot = snapshot
+                        self._last_browser_context = browser_context
                     elif now - self._last_recorded_at >= self.heartbeat_interval:
                         self._emit_event(snapshot, browser_context, "heartbeat")
+                        self._last_snapshot = snapshot
+                        self._last_browser_context = browser_context
             except Exception:
                 now = time.monotonic()
                 if now - self._last_error_at > 30:

@@ -502,7 +502,9 @@ def _rank_events(
         except ValueError:
             age_hours = 0.0
         recency_bonus = max(0.0, 0.12 - min(age_hours / 240.0, 0.12))
-        freshness_bonus = 0.03 if "heartbeat" in event.interaction_type else 0.0
+        interaction = event.interaction_type.casefold()
+        action_bonus = 0.06 if interaction in {"focus", "app_switch", "navigate", "tab_switch", "context_change"} else 0.0
+        heartbeat_penalty = -0.05 if "heartbeat" in interaction else 0.0
         score = (
             (semantic_score * 0.56)
             + (min(lexical_score, 4.0) * 0.16)
@@ -512,7 +514,8 @@ def _rank_events(
             + (0.22 if domain_match else 0.0)
             + (0.16 if app_match else 0.0)
             + recency_bonus
-            + freshness_bonus
+            + action_bonus
+            + heartbeat_penalty
         )
         if target_domains and not domain_match:
             if semantic_score < 0.45 and lexical_score < 0.5 and fuzzy_score < 0.6:
@@ -678,11 +681,16 @@ def _attention_cue(events: list[Event], duration_seconds: int, url: str | None) 
     if not events:
         return None
     interaction_types = {event.interaction_type.casefold() for event in events}
-    if "focus" in interaction_types and "heartbeat" in interaction_types and duration_seconds >= 5 * 60:
+    has_focus = any(
+        kind in {"focus", "app_switch", "navigate", "tab_switch", "context_change"}
+        for kind in interaction_types
+    )
+    has_heartbeat = any("heartbeat" in kind for kind in interaction_types)
+    if has_focus and has_heartbeat and duration_seconds >= 5 * 60:
         return "Stayed here for a sustained stretch"
-    if "focus" in interaction_types and duration_seconds <= 90:
+    if has_focus and duration_seconds <= 90:
         return "Quick switch into this moment"
-    if any("heartbeat" in kind for kind in interaction_types) and duration_seconds >= 12 * 60:
+    if has_heartbeat and duration_seconds >= 12 * 60:
         return "Likely a deeper attention block"
     if url and any(event.tab_titles for event in events):
         return "Browser context captured with nearby tabs"
