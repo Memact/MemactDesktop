@@ -4,8 +4,8 @@ import logging
 import threading
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QPoint, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QCursor, QDesktopServices, QIcon
+from PyQt6.QtCore import QObject, QPoint, QRectF, QEvent, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QAction, QColor, QCursor, QDesktopServices, QIcon, QPainter, QPainterPath, QRegion
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSpacerItem,
     QSizePolicy,
+    QGridLayout,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
@@ -395,6 +396,7 @@ class MainWindow(QMainWindow):
         self._last_answer: QueryAnswer | None = None
         self._search_active = False
         self._hero_shifted = False
+        self._status_text_cached = ""
         self._query_request_id = 0
         self._suggestion_request_id = 0
         self._selected_suggestion_index = -1
@@ -494,7 +496,11 @@ class MainWindow(QMainWindow):
                 border-bottom-right-radius: 24px;
             }
             QFrame#SuggestionDock[attached="true"] {
-                margin-top: -3px;
+                margin-top: 0px;
+                border-top-left-radius: 0px;
+                border-top-right-radius: 0px;
+                border-top: none;
+                border-top-color: transparent;
             }
             QScrollArea#SuggestionScroll {
                 background: transparent;
@@ -561,8 +567,10 @@ class MainWindow(QMainWindow):
                 border: 1px solid rgba(121, 173, 255, 0.45);
             }
             QFrame#SearchShell[attached="true"] {
-                border-bottom-left-radius: 10px;
-                border-bottom-right-radius: 10px;
+                border-bottom: none;
+                border-bottom-color: transparent;
+                border-bottom-left-radius: 0px;
+                border-bottom-right-radius: 0px;
             }
             QFrame#AnswerCard {
                 background: rgba(255, 255, 255, 0.11);
@@ -742,21 +750,21 @@ class MainWindow(QMainWindow):
         self.compact_brand.setFont(compact_brand_font)
         brand_layout.addWidget(self.compact_brand, 0, Qt.AlignmentFlag.AlignCenter)
 
-        self.results_search_stack = QWidget()
-        self.results_search_stack.setFixedWidth(results_search_width)
-        self.results_search_layout = QVBoxLayout(self.results_search_stack)
-        self.results_search_layout.setContentsMargins(0, 0, 0, 0)
-        self.results_search_layout.setSpacing(0)
-
         self.results_header = QWidget()
+        self.results_header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.results_header.setFixedHeight(results_header_height)
-        results_header_layout = QHBoxLayout(self.results_header)
+        results_header_layout = QGridLayout(self.results_header)
+        self.results_header_layout = results_header_layout
         results_header_layout.setContentsMargins(0, 0, 0, 0)
-        results_header_layout.setSpacing(14)
-        results_header_layout.addWidget(self.compact_brand_host, 0, Qt.AlignmentFlag.AlignVCenter)
-        results_header_layout.addWidget(self.back_orb, 0, Qt.AlignmentFlag.AlignVCenter)
-        results_header_layout.addWidget(self.reload_orb, 0, Qt.AlignmentFlag.AlignVCenter)
-        results_header_layout.addWidget(self.results_search_stack, 0, Qt.AlignmentFlag.AlignVCenter)
+        results_header_layout.setHorizontalSpacing(14)
+        results_header_layout.setVerticalSpacing(0)
+        self.results_left_controls = QWidget()
+        results_left_layout = QHBoxLayout(self.results_left_controls)
+        results_left_layout.setContentsMargins(0, 0, 0, 0)
+        results_left_layout.setSpacing(14)
+        results_left_layout.addWidget(self.compact_brand_host, 0, Qt.AlignmentFlag.AlignVCenter)
+        results_left_layout.addWidget(self.back_orb, 0, Qt.AlignmentFlag.AlignVCenter)
+        results_left_layout.addWidget(self.reload_orb, 0, Qt.AlignmentFlag.AlignVCenter)
         self.results_menu_orb = QFrame()
         self.results_menu_orb.setObjectName("MenuOrb")
         self.results_menu_orb.setFixedSize(orb_size, orb_size)
@@ -767,12 +775,32 @@ class MainWindow(QMainWindow):
         self.results_menu_button.setFixedSize(menu_button_size, menu_button_size)
         self.results_menu_button.clicked.connect(self._show_menu)
         results_menu_layout.addWidget(self.results_menu_button, 0, Qt.AlignmentFlag.AlignCenter)
-        results_header_layout.addWidget(self.results_menu_orb, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.results_right_controls = QWidget()
+        right_controls_layout = QHBoxLayout(self.results_right_controls)
+        right_controls_layout.setContentsMargins(0, 0, 0, 0)
+        right_controls_layout.setSpacing(0)
+        right_controls_layout.addWidget(self.results_menu_orb, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        results_header_layout.addWidget(
+            self.results_left_controls,
+            0,
+            0,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        results_header_layout.addWidget(
+            self.results_right_controls,
+            0,
+            2,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+        )
+        results_header_layout.setColumnStretch(0, 0)
+        results_header_layout.setColumnStretch(1, 1)
+        results_header_layout.setColumnStretch(2, 0)
         self.results_header.hide()
         top_bar.addWidget(
             self.results_header,
-            0,
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            1,
+            Qt.AlignmentFlag.AlignVCenter,
         )
         self.home_menu_orb = QFrame()
         self.home_menu_orb.setObjectName("MenuOrb")
@@ -784,14 +812,9 @@ class MainWindow(QMainWindow):
         self.menu_button.setFixedSize(menu_button_size, menu_button_size)
         self.menu_button.clicked.connect(self._show_menu)
         menu_layout.addWidget(self.menu_button, 0, Qt.AlignmentFlag.AlignCenter)
-        home_slot_width = (
-            orb_size * 4
-            + results_search_width
-            + results_header_layout.spacing() * 4
-        )
         self.home_menu_slot = QWidget()
-        self.home_menu_slot.setFixedWidth(home_slot_width)
         self.home_menu_slot.setFixedHeight(results_header_height)
+        self.home_menu_slot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         home_slot_layout = QHBoxLayout(self.home_menu_slot)
         home_slot_layout.setContentsMargins(0, 0, 0, 0)
         home_slot_layout.addStretch(1)
@@ -799,7 +822,7 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(
             self.home_menu_slot,
             0,
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
         )
         layout.addLayout(top_bar)
 
@@ -828,10 +851,11 @@ class MainWindow(QMainWindow):
         self.search_shell.setProperty("active", False)
         self.search_shell.setProperty("attached", False)
         self.search_shell.setMinimumWidth(760)
-        self.search_shell.setMaximumWidth(840)
-        self.search_shell.setFixedHeight(72)
+        self.search_shell.setMaximumWidth(980)
+        self.search_shell.setFixedHeight(orb_size)
+        self.search_shell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         search_layout = QHBoxLayout(self.search_shell)
-        search_layout.setContentsMargins(26, 16, 18, 16)
+        search_layout.setContentsMargins(26, 12, 18, 12)
         search_layout.setSpacing(14)
 
         self.search_input = SearchInput()
@@ -852,6 +876,7 @@ class MainWindow(QMainWindow):
         self.search_input.escape_pressed.connect(self._dismiss_suggestions)
         self.search_input.typed_over_suggestion.connect(self._replace_suggestion_with_typed)
         search_layout.addWidget(self.search_input, 1)
+        self.search_shell.setFocusProxy(self.search_input)
 
         self.search_button = QPushButton("")
         self.search_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -864,12 +889,20 @@ class MainWindow(QMainWindow):
             self.search_button.setIcon(self._search_icon)
             self.search_button.setIconSize(self.search_button.size())
         search_layout.addWidget(self.search_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.search_shell_base_margins = (26, 16, 18, 16)
+        self.search_shell_base_margins = (26, 12, 18, 12)
+
+        self.header_container = QFrame()
+        self.header_layout = QVBoxLayout(self.header_container)
+        self.header_layout.setContentsMargins(0, 0, 0, 0)
+        self.header_layout.setSpacing(8)
+        self.header_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.header_layout.addWidget(self.title_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.header_layout.addWidget(self.search_shell, 0, Qt.AlignmentFlag.AlignHCenter)
 
         self.suggestion_dock = QFrame()
         self.suggestion_dock.setObjectName("SuggestionDock")
         self.suggestion_dock.setMinimumWidth(760)
-        self.suggestion_dock.setMaximumWidth(840)
+        self.suggestion_dock.setMaximumWidth(980)
         self.suggestion_dock.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self._suggestion_row_height = 66
         self._suggestion_visible_limit = 6
@@ -895,8 +928,8 @@ class MainWindow(QMainWindow):
         self.answer_card = QFrame()
         self.answer_card.setObjectName("AnswerCard")
         self.answer_card.setMinimumWidth(760)
-        self.answer_card.setMaximumWidth(980)
-        self.answer_card.setMinimumHeight(320)
+        self.answer_card.setMaximumWidth(self._max_answer_width if hasattr(self, "_max_answer_width") else 1400)
+        self.answer_card.setMinimumHeight(0)
         answer_layout = QVBoxLayout(self.answer_card)
         answer_layout.setContentsMargins(22, 20, 22, 20)
         answer_layout.setSpacing(12)
@@ -946,10 +979,7 @@ class MainWindow(QMainWindow):
         self.status_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         center.addSpacing(0)
-        center.addWidget(title)
-        center.addSpacing(6)
-        center.addWidget(self.search_shell, 0, Qt.AlignmentFlag.AlignCenter)
-        center.addWidget(self.suggestion_dock, 0, Qt.AlignmentFlag.AlignCenter)
+        center.addWidget(self.header_container, 0, Qt.AlignmentFlag.AlignCenter)
         center.addSpacing(16)
         center.addWidget(self.answer_card, 0, Qt.AlignmentFlag.AlignCenter)
 
@@ -964,8 +994,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.status_text, 0, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
 
         self.setCentralWidget(root)
+        self.suggestion_dock.setParent(self.root)
         self.answer_card.hide()
         self.suggestion_dock.hide()
+        self._apply_responsive_sizes()
+        self._position_suggestion_dock()
 
     def _build_tray(self) -> None:
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -1130,6 +1163,7 @@ class MainWindow(QMainWindow):
                 background: #000543;
                 color: #ffffff;
                 border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 16px;
                 padding: 8px;
             }
             QMenu::item {
@@ -1190,8 +1224,6 @@ class MainWindow(QMainWindow):
             self.suggestion_dock.setMaximumWidth(dock_width)
             self.suggestion_dock.setFixedWidth(dock_width)
         self._set_hero_shifted(bool(suggestions))
-        if self._results_mode and self.suggestion_dock.parent() is not self.root:
-            self.suggestion_dock.setParent(self.root)
         self.suggestion_dock.setVisible(bool(suggestions))
         self._set_search_attached(bool(suggestions))
         QTimer.singleShot(0, self._reveal_suggestion_dock)
@@ -1218,32 +1250,86 @@ class MainWindow(QMainWindow):
             if self._search_icon is not None:
                 self.search_button.setIcon(self._search_icon)
 
+    def _apply_responsive_sizes(self) -> None:
+        if not hasattr(self, "_min_content_width"):
+            self._min_content_width = 640
+            self._max_content_width = 1280
+            self._min_results_search_width = 520
+            self._max_results_search_width = 1200
+            self._max_answer_width = 1400
+            self._orb_size = 62
+            self._results_header_height = 72
+            self._menu_button_size = 46
+
+        margins = self.root.layout().contentsMargins()
+        available = max(self.root.width() - (margins.left() + margins.right()), 600)
+
+        def clamp(value: int, low: int, high: int) -> int:
+            return max(low, min(high, value))
+
+        min_content_width = min(self._min_content_width, available)
+        left_width = self.results_left_controls.sizeHint().width()
+        right_width = self.results_right_controls.sizeHint().width()
+        spacing = self.results_header_layout.horizontalSpacing()
+        center_available = max(1, available - left_width - right_width - (spacing * 2))
+        min_width = min(self._min_content_width, center_available)
+        home_width = clamp(int(available * 0.80), min_width, center_available)
+
+        if self._results_mode:
+            answer_max = available
+        else:
+            answer_max = min(self._max_answer_width, available)
+        answer_width = clamp(int(available * 0.86), 700, answer_max)
+
+        self.search_shell.setFixedWidth(home_width)
+        self.search_shell.setFixedHeight(self._orb_size)
+        self.header_container.setFixedWidth(home_width)
+        self.suggestion_dock.setMinimumWidth(home_width)
+        self.suggestion_dock.setMaximumWidth(home_width)
+        self.answer_card.setFixedWidth(answer_width)
+
+        self.results_header_layout.setColumnMinimumWidth(0, left_width)
+        self.results_header_layout.setColumnMinimumWidth(2, right_width)
+
+        self.home_menu_slot.setFixedHeight(self._results_header_height)
+        self.search_shell.updateGeometry()
+        self.header_container.updateGeometry()
+        self.answer_card.updateGeometry()
+        self.results_header.updateGeometry()
+
     def _set_results_mode(self, active: bool) -> None:
         if self._results_mode == active:
             return
         self._results_mode = active
-        self.center_layout.removeWidget(self.search_shell)
-        self.center_layout.removeWidget(self.suggestion_dock)
-        self.results_search_layout.removeWidget(self.search_shell)
+        self.center_layout.removeWidget(self.header_container)
         if active:
             self.title_label.hide()
             self.results_header.show()
             self.home_menu_slot.hide()
-            self.results_search_layout.addWidget(self.search_shell)
+            if self.results_header_layout.indexOf(self.header_container) == -1:
+                self.results_header_layout.addWidget(
+                    self.header_container,
+                    0,
+                    1,
+                    Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+                )
+            self.header_layout.setSpacing(0)
+            self.header_container.setFixedHeight(self._orb_size)
             self.top_spacer.changeSize(20, 8, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-            self.search_shell.setMinimumWidth(706)
-            self.search_shell.setMaximumWidth(706)
         else:
             self.results_header.hide()
             self.home_menu_slot.show()
             self.title_label.show()
-            self.center_layout.insertWidget(3, self.search_shell, 0, Qt.AlignmentFlag.AlignCenter)
-            self.center_layout.insertWidget(4, self.suggestion_dock, 0, Qt.AlignmentFlag.AlignCenter)
+            self.results_header_layout.removeWidget(self.header_container)
+            self.header_container.setMinimumHeight(0)
+            self.header_container.setMaximumHeight(16777215)
+            self.header_layout.setSpacing(8)
+            self.center_layout.insertWidget(3, self.header_container, 0, Qt.AlignmentFlag.AlignCenter)
             self.top_spacer.changeSize(20, 12, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
-            self.search_shell.setMinimumWidth(760)
-            self.search_shell.setMaximumWidth(840)
         self.root.layout().invalidate()
         self.root.layout().activate()
+        self._apply_responsive_sizes()
+        self._position_suggestion_dock()
 
     def _set_preview_state(self, active: bool) -> None:
         self.search_input.setProperty("preview", active)
@@ -1252,6 +1338,10 @@ class MainWindow(QMainWindow):
         self.search_input.style().unpolish(self.search_input)
         self.search_input.style().polish(self.search_input)
         self.search_input.update()
+
+    def _show_query_start(self) -> None:
+        self.search_input.setCursorPosition(0)
+        self.search_input.deselect()
 
     def _select_suggestion(self, index: int) -> None:
         if not self._visible_suggestion_cards:
@@ -1331,6 +1421,8 @@ class MainWindow(QMainWindow):
     def _handle_accept_selection(self) -> None:
         if self.suggestion_dock.isVisible() and self._selected_suggestion_index >= 0:
             self._apply_suggestion(self._visible_suggestion_cards[self._selected_suggestion_index]._completion)
+            return
+        self._submit_query()
 
     def _commit_selected_suggestion(self) -> None:
         if not self.suggestion_dock.isVisible() or self._selected_suggestion_index < 0:
@@ -1376,10 +1468,15 @@ class MainWindow(QMainWindow):
         focused = QApplication.focusWidget()
         if focused is self.search_input:
             return
+        if focused is not None and self.suggestion_dock.isAncestorOf(focused):
+            return
         if isinstance(focused, SuggestionCard):
             return
         self.suggestion_dock.hide()
         self._set_search_attached(False)
+        self.search_input.setProperty("suggestionSelected", False)
+        self._selected_suggestion_index = -1
+        self._set_preview_state(False)
         if not self.search_input.text().strip():
             self._set_search_active(False)
         self._set_hero_shifted(False)
@@ -1391,28 +1488,27 @@ class MainWindow(QMainWindow):
             return
         self._hero_shifted = shifted
         if shifted:
-            self.status_text.hide()
+            if self.status_text.text():
+                self._status_text_cached = self.status_text.text()
+            self.status_text.setText("")
         else:
-            self.status_text.show()
+            if self._status_text_cached and not self.status_text.text():
+                self.status_text.setText(self._status_text_cached)
 
     def _position_suggestion_dock(self) -> None:
-        if not self._results_mode:
-            return
         anchor_pos = self.search_shell.mapTo(self.root, QPoint(0, 0))
         dock_width = self.search_shell.width()
         self.suggestion_dock.setMinimumWidth(dock_width)
         self.suggestion_dock.setMaximumWidth(dock_width)
         self.suggestion_dock.resize(dock_width, self.suggestion_dock.height())
         x = anchor_pos.x()
-        y = anchor_pos.y() + self.search_shell.height() - 3
+        y = anchor_pos.y() + self.search_shell.height() - 1
         self.suggestion_dock.move(x, y)
         self.suggestion_dock.raise_()
         self.search_shell.raise_()
 
     def _reveal_suggestion_dock(self) -> None:
-        if self._results_mode:
-            self._position_suggestion_dock()
-            return
+        self._position_suggestion_dock()
         self.search_shell.raise_()
 
     def _handle_query_text_changed(self, text: str) -> None:
@@ -1476,6 +1572,9 @@ class MainWindow(QMainWindow):
             self.search_input.clear()
             self.search_input.clearFocus()
             self._update_search_button()
+        else:
+            if self.search_input.text():
+                self._show_query_start()
         self._set_search_active(False)
         self._set_hero_shifted(False)
         if self._db_ready:
@@ -1489,6 +1588,7 @@ class MainWindow(QMainWindow):
         if not query:
             self._reset_home_state(clear_query=False)
             return
+        self.search_input.clearFocus()
         if not self._db_ready:
             self.status_text.setText("Still starting up. Your local memory engine is not ready yet.")
             return
@@ -1499,6 +1599,7 @@ class MainWindow(QMainWindow):
         self._set_preview_state(False)
         self.status_text.setText("Searching locally...")
         self.search_button.setEnabled(False)
+        self.search_input.clearFocus()
         self._suggestion_timer.stop()
         self.suggestion_dock.hide()
         self._set_search_attached(False)
@@ -1536,6 +1637,7 @@ class MainWindow(QMainWindow):
         self.search_input.setText(query)
         self.search_input.blockSignals(False)
         self.search_input.setProperty("empty", not bool(query))
+        self._show_query_start()
         self.search_input.style().unpolish(self.search_input)
         self.search_input.style().polish(self.search_input)
         self.search_input.update()
@@ -1621,7 +1723,10 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        self._apply_responsive_sizes()
         self._position_suggestion_dock()
+        self.root.layout().invalidate()
+        self.root.layout().activate()
 
     def _show_menu(self) -> None:
         anchor = self.results_menu_button if self._results_mode else self.menu_button
@@ -1680,6 +1785,16 @@ class MainWindow(QMainWindow):
         if not self._native_theme_applied:
             apply_native_window_theme(self)
             self._native_theme_applied = True
+        self._apply_responsive_sizes()
+        self._position_suggestion_dock()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._apply_responsive_sizes()
+            self._position_suggestion_dock()
+            self.root.layout().invalidate()
+            self.root.layout().activate()
+        super().changeEvent(event)
 
     def quit_app(self) -> None:
         self._quitting = True
