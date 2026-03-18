@@ -10,6 +10,7 @@ from difflib import SequenceMatcher
 from urllib.parse import urlparse
 
 from core.database import Event, lexical_candidates, list_events_around, list_events_between, list_recent_events
+from core.engine_client import engine_candidates, first_available
 from core.semantic import cosine_similarity, embed_text, tokenize
 
 
@@ -56,6 +57,57 @@ _STOP_WORDS = {
     "app",
 }
 
+_ACTIVITY_CATEGORY_DESCRIPTIONS: dict[str, str] = {
+    "chatting": "chatting, messaging, DM, conversation, group chat",
+    "coding": "programming, coding, debugging, software development, writing code",
+    "writing": "writing notes, documents, drafting text",
+    "reading": "reading articles, documentation, posts, long form text",
+    "searching": "searching the web, looking up information, query",
+    "watching": "watching videos, streams, media",
+    "emailing": "email, inbox, composing messages",
+    "organizing": "organizing files, folders, file management",
+    "typing": "typing, editing text, entering text",
+    "scrolling": "scrolling, scrolling through content, skimming",
+}
+
+_ACTIVITY_CATEGORY_EMBEDDINGS: dict[str, list[float]] | None = None
+
+
+def _activity_entity_key(event: Event) -> str:
+    return (_domain(event.url) or _friendly_app_name(event.application)).casefold()
+
+
+def _activity_semantic_scores(event: Event) -> dict[str, float]:
+    try:
+        event_embedding = json.loads(event.embedding_json)
+    except Exception:
+        event_embedding = embed_text(event.searchable_text or "")
+    scores: dict[str, float] = {}
+    for name, embedding in _activity_category_embeddings().items():
+        scores[name] = cosine_similarity(event_embedding, embedding)
+    return scores
+
+
+def _learn_activity_priors(events: list[Event]) -> dict[str, dict[str, float]]:
+    priors: dict[str, dict[str, float]] = {}
+    for event in events:
+        scores = _activity_semantic_scores(event)
+        if not scores:
+            continue
+        best_name = max(scores, key=scores.get)
+        best_score = scores[best_name]
+        runner_up = max((score for name, score in scores.items() if name != best_name), default=-1.0)
+        if best_score < 0.36 or (best_score - runner_up) < 0.05:
+            continue
+        key = _activity_entity_key(event)
+        bucket = priors.setdefault(key, {})
+        bucket[best_name] = bucket.get(best_name, 0.0) + 1.0
+    for key, bucket in priors.items():
+        total = sum(bucket.values()) or 1.0
+        for name in list(bucket.keys()):
+            bucket[name] = bucket[name] / total
+    return priors
+
 
 @dataclass(slots=True)
 class EventMatch:
@@ -87,6 +139,9 @@ class ActivitySpan:
     before_context: str | None
     after_context: str | None
     moment_summary: str
+    activity_category: str | None
+    activity_mode: str | None
+    activity_confidence: float
 
 
 @dataclass(slots=True)
@@ -269,7 +324,161 @@ def _normalize_label(value: str) -> str:
             continue
         collapsed.append(word)
         previous_key = key
-    return " ".join(collapsed)
+    collapsed_text = " ".join(collapsed)
+
+    # Collapse repeated phrases like "Select files Select files".
+    phrase_words = collapsed_text.split()
+    while len(phrase_words) >= 2 and len(phrase_words) % 2 == 0:
+        half = len(phrase_words) // 2
+        if [token.casefold() for token in phrase_words[:half]] == [
+            token.casefold() for token in phrase_words[half:]
+        ]:
+            phrase_words = phrase_words[:half]
+        else:
+            break
+    return " ".join(phrase_words)
+
+
+def _activity_category_embeddings() -> dict[str, list[float]]:
+    global _ACTIVITY_CATEGORY_EMBEDDINGS
+    if _ACTIVITY_CATEGORY_EMBEDDINGS is not None:
+        return _ACTIVITY_CATEGORY_EMBEDDINGS
+    embeddings: dict[str, list[float]] = {}
+    for name, description in _ACTIVITY_CATEGORY_DESCRIPTIONS.items():
+        embeddings[name] = embed_text(description)
+    _ACTIVITY_CATEGORY_EMBEDDINGS = embeddings
+    return embeddings
+
+
+def _semantic_activity_category(event: Event, interaction_types: set[str]) -> str | None:
+    if not event.embedding_json and not event.searchable_text:
+        return None
+    try:
+        event_embedding = json.loads(event.embedding_json)
+    except Exception:
+        event_embedding = embed_text(event.searchable_text)
+    best_name = None
+    best_score = -1.0
+    second_score = -1.0
+    for name, embedding in _activity_category_embeddings().items():
+        score = cosine_similarity(event_embedding, embedding)
+        if score > best_score:
+            second_score = best_score
+            best_score = score
+            best_name = name
+        elif score > second_score:
+            second_score = score
+    if best_name is None:
+        return None
+    if best_score < 0.34:
+        return None
+    if second_score >= 0.0 and (best_score - second_score) < 0.04:
+        return None
+    return best_name
+
+
+def _classify_activity(
+    event: Event,
+    interaction_types: set[str],
+    priors: dict[str, dict[str, float]],
+) -> tuple[str | None, float]:
+    scores = _activity_semantic_scores(event)
+    if not scores:
+        return None, 0.0
+    key = _activity_entity_key(event)
+    prior_bucket = priors.get(key, {})
+    combined: dict[str, float] = {}
+    for name, score in scores.items():
+        prior = prior_bucket.get(name, 0.0)
+        combined[name] = (score * 0.78) + (prior * 0.22)
+    best_name = max(combined, key=combined.get)
+    best_score = combined[best_name]
+    runner_up = max((score for name, score in combined.items() if name != best_name), default=-1.0)
+    if best_score < 0.38 or (best_score - runner_up) < 0.05:
+        return None, 0.0
+    return best_name, best_score
+
+
+def _query_activity_category(query: str) -> str | None:
+    tokens = tokenize(query)
+    for name in (
+        "typing",
+        "scrolling",
+        "coding",
+        "chatting",
+        "writing",
+        "reading",
+        "searching",
+        "watching",
+        "emailing",
+        "organizing",
+    ):
+        if name in tokens:
+            return name
+    if not query.strip():
+        return None
+    query_embedding = embed_text(query)
+    best_name = None
+    best_score = -1.0
+    second_score = -1.0
+    for name, embedding in _activity_category_embeddings().items():
+        score = cosine_similarity(query_embedding, embedding)
+        if score > best_score:
+            second_score = best_score
+            best_score = score
+            best_name = name
+        elif score > second_score:
+            second_score = score
+    if best_name is None:
+        return None
+    if best_score < 0.34:
+        return None
+    if second_score >= 0.0 and (best_score - second_score) < 0.05:
+        return None
+    return best_name
+
+
+def _activity_phrase(
+    *,
+    application: str,
+    url: str | None,
+    window_title: str | None,
+    content_text: str | None,
+    duration_seconds: int,
+    interaction_types: set[str],
+    category: str | None,
+    activity_mode: str | None,
+) -> str | None:
+    app_name = _friendly_app_name(application)
+    domain = _domain(url) or ""
+    title = (window_title or "").casefold()
+    content = (content_text or "").casefold()
+
+    if activity_mode == "typing":
+        if category in {"coding", "writing", "chatting", "emailing"}:
+            return f"{category.title()} in {app_name}"
+        return f"Typing in {app_name}"
+    if activity_mode == "scrolling":
+        return f"Scrolling {domain or app_name}"
+    if not category:
+        return None
+    if category == "chatting":
+        return f"Chatting in {app_name}"
+    if category == "emailing":
+        return f"Emailing in {app_name}"
+    if category == "coding":
+        return f"Coding on {domain}" if domain else f"Coding in {app_name}"
+    if category == "writing":
+        return f"Writing in {app_name}"
+    if category == "watching":
+        return f"Watching {domain}" if domain else f"Watching in {app_name}"
+    if category == "searching":
+        return f"Searching {domain}" if domain else f"Searching in {app_name}"
+    if category == "reading":
+        return f"Reading {domain or app_name}"
+    if category == "organizing":
+        return f"Organizing in {app_name}"
+    return None
 
 
 def _dedupe_label_against_app(label: str, application: str) -> str:
@@ -419,7 +628,13 @@ def _load_candidate_events(query: str, start_at: datetime | None, end_at: dateti
     start_text = start_at.isoformat(sep=" ", timespec="seconds") if start_at else None
     end_text = end_at.isoformat(sep=" ", timespec="seconds") if end_at else None
     recent_pool = list_events_between(start_text, end_text, limit=1200)
-    lexical_pool = lexical_candidates(query, start_at=start_text, end_at=end_text, limit=180)
+    engine_pool = engine_candidates(query, start_at=start_text, end_at=end_text, limit=180)
+    lexical_pool = first_available([engine_pool]) or lexical_candidates(
+        query,
+        start_at=start_text,
+        end_at=end_text,
+        limit=180,
+    )
     fallback_pool = list_recent_events(limit=500)
 
     combined: list[Event] = []
@@ -503,7 +718,12 @@ def _rank_events(
             age_hours = 0.0
         recency_bonus = max(0.0, 0.12 - min(age_hours / 240.0, 0.12))
         interaction = event.interaction_type.casefold()
-        action_bonus = 0.06 if interaction in {"focus", "app_switch", "navigate", "tab_switch", "context_change"} else 0.0
+        action_bonus = (
+            0.06
+            if interaction
+            in {"focus", "app_switch", "navigate", "tab_switch", "context_change", "typing", "scrolling"}
+            else 0.0
+        )
         heartbeat_penalty = -0.05 if "heartbeat" in interaction else 0.0
         score = (
             (semantic_score * 0.56)
@@ -654,12 +874,16 @@ def _session_title(
     duration_seconds: int,
     *,
     interaction_types: set[str] | None = None,
+    activity_phrase: str | None = None,
 ) -> str:
     app_name = _friendly_app_name(application)
     clean_label = _dedupe_label_against_app(label, application)
     domain = _domain(url)
     lower_app = app_name.casefold()
     verb = _action_verb(interaction_types or set())
+
+    if activity_phrase:
+        return activity_phrase
 
     if domain:
         if verb:
@@ -707,6 +931,10 @@ def _attention_cue(events: list[Event], duration_seconds: int, url: str | None) 
         for kind in interaction_types
     )
     has_heartbeat = any("heartbeat" in kind for kind in interaction_types)
+    if "typing" in interaction_types and duration_seconds >= 2 * 60:
+        return "Active typing in this moment"
+    if "scrolling" in interaction_types and duration_seconds >= 2 * 60:
+        return "Active scrolling in this moment"
     if has_focus and has_heartbeat and duration_seconds >= 5 * 60:
         return "Stayed here for a sustained stretch"
     if has_focus and duration_seconds <= 90:
@@ -736,6 +964,43 @@ def _annotate_session_flows(spans: list[ActivitySpan]) -> None:
     by_index = {position: original for position, original in enumerate(chronological)}
     ordered = [spans[index] for index in chronological]
 
+    def is_coding_span(span: ActivitySpan) -> bool:
+        return span.activity_category == "coding" and span.activity_confidence >= 0.44
+
+    def is_reference_span(span: ActivitySpan) -> bool:
+        return (
+            span.activity_category in {"searching", "reading"}
+            and span.activity_confidence >= 0.44
+        )
+
+    def transition_intent(
+        prev_span: ActivitySpan | None,
+        span: ActivitySpan,
+        next_span: ActivitySpan | None,
+        prev_gap: float | None,
+        next_gap: float | None,
+    ) -> str | None:
+        max_gap = 60 * 60
+        prev_ok = prev_span is not None and prev_gap is not None and 0 <= prev_gap <= max_gap
+        next_ok = next_span is not None and next_gap is not None and 0 <= next_gap <= max_gap
+
+        if is_coding_span(span):
+            ref_span = None
+            if prev_ok and prev_span and is_reference_span(prev_span):
+                ref_span = prev_span
+            elif next_ok and next_span and is_reference_span(next_span):
+                ref_span = next_span
+            if ref_span:
+                return f"Coding session: referenced {_flow_label(ref_span)} and returned to {_flow_label(span)}"
+
+        if prev_ok and next_ok and prev_span and next_span:
+            if is_reference_span(span) and is_coding_span(prev_span) and is_coding_span(next_span):
+                return (
+                    f"Coding session: checked {_flow_label(span)} between {_flow_label(prev_span)} and {_flow_label(next_span)}"
+                )
+
+        return None
+
     for position, span in enumerate(ordered):
         prev_span = ordered[position - 1] if position > 0 else None
         next_span = ordered[position + 1] if position + 1 < len(ordered) else None
@@ -761,7 +1026,10 @@ def _annotate_session_flows(spans: list[ActivitySpan]) -> None:
             and _flow_label(next_span).casefold() != _flow_label(span).casefold()
         )
 
-        if prev_valid and next_valid:
+        intent = transition_intent(prev_span, span, next_span, prev_gap, next_gap)
+        if intent:
+            flow = intent
+        elif prev_valid and next_valid:
             flow = f"Moved from {_flow_label(prev_span)} to {_flow_label(next_span)} around {_flow_label(span)}"
         elif prev_valid:
             flow = f"Moved from {_flow_label(prev_span)} into {_flow_label(span)}"
@@ -798,6 +1066,7 @@ def _build_spans(
     score_by_id = {match.event.id: match.score for match in top_matches}
     match_by_id = {match.event.id: match for match in top_matches}
     source_events = all_events if all_events is not None else [match.event for match in top_matches]
+    activity_priors = _learn_activity_priors(source_events)
     ordered = sorted(source_events, key=lambda item: (item.occurred_at, item.id))
     spans: list[ActivitySpan] = []
     current_events: list[Event] = []
@@ -854,12 +1123,29 @@ def _build_spans(
             after_context = _context_summary(after_events, current_ids, context_filter=context_filter) or after_context
         display_label = _event_label(best_event)
         interaction_types = {event.interaction_type.casefold() for event in current_events}
+        activity_mode = "typing" if "typing" in interaction_types else "scrolling" if "scrolling" in interaction_types else None
+        activity_category, activity_confidence = _classify_activity(
+            best_event,
+            interaction_types,
+            activity_priors,
+        )
+        activity_phrase = _activity_phrase(
+            application=best_event.application,
+            url=best_event.url,
+            window_title=best_event.window_title,
+            content_text=best_event.content_text,
+            duration_seconds=duration_seconds,
+            interaction_types=interaction_types,
+            category=activity_category,
+            activity_mode=activity_mode,
+        )
         session_title = _session_title(
             display_label,
             best_event.application,
             best_event.url,
             duration_seconds,
             interaction_types=interaction_types,
+            activity_phrase=activity_phrase,
         )
         tab_preview = _tab_preview(current_events)
         attention_cue = _attention_cue(current_events, duration_seconds, best_event.url)
@@ -887,6 +1173,9 @@ def _build_spans(
                     before_context,
                     after_context,
                 ),
+                activity_category=activity_category,
+                activity_mode=activity_mode,
+                activity_confidence=activity_confidence,
             )
         )
         current_events = []
@@ -1032,6 +1321,9 @@ def _moment_hint(span: ActivitySpan) -> str | None:
 
 def _flow_phrase(span: ActivitySpan) -> str:
     flow = span.session_flow.strip()
+    lowered = flow.casefold()
+    if lowered.startswith("coding session:"):
+        return f"you were in a coding session: {flow.split(':', 1)[1].strip()}"
     mappings = (
         ("Browsing ", "you were browsing "),
         ("Using ", "you were using "),
@@ -1039,6 +1331,20 @@ def _flow_phrase(span: ActivitySpan) -> str:
         ("Working in ", "you were working in "),
         ("Started in ", "you started in "),
         ("Moved from ", "you moved from "),
+        ("Opened ", "you opened "),
+        ("Switched to ", "you switched to "),
+        ("Chatting in ", "you were chatting in "),
+        ("Messaging in ", "you were messaging in "),
+        ("Emailing in ", "you were emailing in "),
+        ("Coding in ", "you were coding in "),
+        ("Typing in ", "you were typing in "),
+        ("Writing in ", "you were writing in "),
+        ("Reading ", "you were reading "),
+        ("Scrolling ", "you were scrolling "),
+        ("Watching ", "you were watching "),
+        ("Searching ", "you were searching "),
+        ("Coding on ", "you were coding on "),
+        ("Organizing in ", "you were organizing in "),
     )
     for prefix, replacement in mappings:
         if flow.startswith(prefix):
@@ -1230,6 +1536,15 @@ def answer_query(query: str) -> QueryAnswer:
         if domain_spans:
             relevant_spans = domain_spans
 
+    query_category = _query_activity_category(query)
+    if query_category:
+        if query_category in {"typing", "scrolling"}:
+            category_spans = [span for span in spans if span.activity_mode == query_category]
+        else:
+            category_spans = [span for span in spans if span.activity_category == query_category]
+        if category_spans:
+            relevant_spans = category_spans
+
     summary = _query_summary(relevant_spans, time_scope)
     related_queries = _build_related_queries(
         query,
@@ -1366,6 +1681,24 @@ def answer_query(query: str) -> QueryAnswer:
         )
 
     if _yes_no_query(query):
+        if query_category:
+            if query_category in {"typing", "scrolling"}:
+                category_spans = [span for span in spans if span.activity_mode == query_category]
+            else:
+                category_spans = [span for span in spans if span.activity_category == query_category]
+            if not category_spans:
+                summary = f"I did not find strong local activity that looks like {query_category}."
+                if time_scope:
+                    summary = f"In {time_scope}, {summary[0].lower()}{summary[1:]}"
+                return QueryAnswer(
+                    answer="I do not have clear evidence for that.",
+                    summary=summary,
+                    details_label="Show closest matches",
+                    evidence=relevant_spans[:6],
+                    time_scope_label=time_scope,
+                    result_count=len(ranked),
+                    related_queries=related_queries,
+                )
         strongest = relevant_spans[0]
         threshold = 0.25 if time_scope else 0.31
         answer = "I do not have clear evidence for that."

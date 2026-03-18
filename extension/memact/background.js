@@ -73,6 +73,25 @@ async function captureActiveTabContext(tab) {
     const [injected] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => {
+        if (!window.__memactCaptureInstalled) {
+          window.__memactCaptureInstalled = true;
+          window.__memactLastInputAt = 0;
+          window.__memactLastScrollAt = 0;
+          window.addEventListener(
+            "input",
+            () => {
+              window.__memactLastInputAt = Date.now();
+            },
+            true
+          );
+          window.addEventListener(
+            "scroll",
+            () => {
+              window.__memactLastScrollAt = Date.now();
+            },
+            true
+          );
+        }
         const readMeta = (key, attr = "name") => {
           const selector = `meta[${attr}="${key}"]`;
           const el = document.querySelector(selector);
@@ -87,12 +106,27 @@ async function captureActiveTabContext(tab) {
         const article = document.querySelector("article") || document.querySelector("main");
         const rawSnippet = article?.innerText || document.body?.innerText || "";
         const snippet = rawSnippet.replace(/\s+/g, " ").trim().slice(0, 280);
+        const now = Date.now();
+        const activeEl = document.activeElement;
+        const activeTag = activeEl?.tagName || "";
+        const activeType = activeEl?.type || "";
+        const isEditable = Boolean(activeEl?.isContentEditable);
+        const typingActive =
+          window.__memactLastInputAt &&
+          now - window.__memactLastInputAt < 5000 &&
+          (activeTag === "INPUT" || activeTag === "TEXTAREA" || isEditable);
+        const scrollingActive =
+          window.__memactLastScrollAt && now - window.__memactLastScrollAt < 4000;
         return {
           pageTitle,
           description,
           h1,
           selection,
-          snippet
+          snippet,
+          activeTag,
+          activeType,
+          typingActive,
+          scrollingActive
         };
       }
     });
@@ -105,7 +139,11 @@ async function captureActiveTabContext(tab) {
       description: normalizeText(result.description, 200),
       h1: normalizeText(result.h1, 120),
       selection: normalizeText(result.selection, 200),
-      snippet: normalizeText(result.snippet, 280)
+      snippet: normalizeText(result.snippet, 280),
+      activeTag: normalizeText(result.activeTag, 40),
+      activeType: normalizeText(result.activeType, 40),
+      typingActive: Boolean(result.typingActive),
+      scrollingActive: Boolean(result.scrollingActive)
     };
   } catch (error) {
     return null;

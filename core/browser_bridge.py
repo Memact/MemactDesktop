@@ -26,6 +26,10 @@ class BrowserSession:
     page_h1: str | None
     page_snippet: str | None
     selection_text: str | None
+    active_tag: str | None
+    active_type: str | None
+    typing_active: bool
+    scrolling_active: bool
 
 
 class BrowserStateStore:
@@ -49,6 +53,10 @@ class BrowserStateStore:
         page_h1 = str(active_context.get("h1", "")).strip() or None
         page_snippet = str(active_context.get("snippet", "")).strip() or None
         selection_text = str(active_context.get("selection", "")).strip() or None
+        active_tag = str(active_context.get("activeTag", "")).strip() or None
+        active_type = str(active_context.get("activeType", "")).strip() or None
+        typing_active = bool(active_context.get("typingActive", False))
+        scrolling_active = bool(active_context.get("scrollingActive", False))
 
         for item in tabs[:MAX_TABS]:
             if not isinstance(item, dict):
@@ -79,6 +87,10 @@ class BrowserStateStore:
             page_h1=page_h1,
             page_snippet=page_snippet,
             selection_text=selection_text,
+            active_tag=active_tag,
+            active_type=active_type,
+            typing_active=typing_active,
+            scrolling_active=scrolling_active,
         )
         with self._lock:
             self._sessions[browser] = session

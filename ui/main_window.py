@@ -195,7 +195,21 @@ class EvidenceCard(QFrame):
         chip_row = QHBoxLayout()
         chip_row.setContentsMargins(0, 0, 0, 0)
         chip_row.setSpacing(8)
-        for chip_text in (app_label, _domain_chip(span.url), _duration_chip(span.duration_seconds)):
+        activity_chips: list[str] = []
+        if getattr(span, "activity_mode", None):
+            activity_chips.append(str(span.activity_mode).replace("_", " ").title())
+        category = getattr(span, "activity_category", None)
+        category_conf = float(getattr(span, "activity_confidence", 0.0) or 0.0)
+        if category and category not in {"typing", "scrolling"} and category_conf >= 0.44:
+            activity_chips.append(str(category).replace("_", " ").title())
+        if not activity_chips:
+            activity_chips.append("Web Activity" if span.url else "App Activity")
+        for chip_text in (
+            app_label,
+            _domain_chip(span.url),
+            *activity_chips,
+            _duration_chip(span.duration_seconds),
+        ):
             if not chip_text:
                 continue
             chip = QLabel(chip_text)
@@ -223,6 +237,34 @@ class EvidenceCard(QFrame):
         else:
             attention = None
 
+        action_map = {
+            "app_switch": "app switch",
+            "tab_switch": "tab switch",
+            "navigate": "navigate",
+            "context_change": "context change",
+            "focus": "focus",
+            "typing": "typing",
+            "scrolling": "scrolling",
+        }
+        actions: list[str] = []
+        seen_actions: set[str] = set()
+        for event in span.events:
+            kind = (event.interaction_type or "").strip().lower()
+            if not kind or kind in {"heartbeat", "legacy_import", "legacy_focus", "legacy_heartbeat"}:
+                continue
+            label = action_map.get(kind, kind.replace("_", " "))
+            if label in seen_actions:
+                continue
+            seen_actions.add(label)
+            actions.append(label)
+            if len(actions) >= 5:
+                break
+        activity_line = None
+        if actions:
+            activity_line = QLabel("Actions: " + " | ".join(actions))
+            activity_line.setObjectName("EvidenceActivity")
+            activity_line.setWordWrap(True)
+
         snippet = QLabel(span.snippet)
         snippet.setObjectName("EvidenceSnippet")
         snippet.setWordWrap(True)
@@ -243,6 +285,8 @@ class EvidenceCard(QFrame):
             layout.addWidget(link_button, 0, Qt.AlignmentFlag.AlignLeft)
         if attention is not None:
             layout.addWidget(attention)
+        if activity_line is not None:
+            layout.addWidget(activity_line)
         layout.addWidget(snippet)
         layout.addWidget(moment)
         if span.tab_preview:
@@ -407,7 +451,7 @@ class MainWindow(QMainWindow):
 
         self._suggestion_timer = QTimer(self)
         self._suggestion_timer.setSingleShot(True)
-        self._suggestion_timer.setInterval(60)
+        self._suggestion_timer.setInterval(20)
         self._suggestion_timer.timeout.connect(self._kickoff_suggestion_refresh)
 
         self._hover_reset_timer = QTimer(self)
@@ -653,6 +697,11 @@ class MainWindow(QMainWindow):
             }
             QLabel#EvidenceAttention {
                 color: rgba(255, 255, 255, 0.76);
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QLabel#EvidenceActivity {
+                color: rgba(198, 214, 255, 0.86);
                 font-size: 12px;
                 font-weight: 600;
             }
@@ -1042,7 +1091,7 @@ class MainWindow(QMainWindow):
         self.overflow_menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         install_action = self.overflow_menu.addAction("Install Browser Extension")
         install_action.triggered.connect(self._open_browser_setup_from_menu)
-        privacy_action = self.overflow_menu.addAction("Privacy Promise")
+        privacy_action = self.overflow_menu.addAction("Privacy Notice")
         privacy_action.triggered.connect(self._show_privacy_dialog)
         self.overflow_menu.addSeparator()
         quit_action = self.overflow_menu.addAction("Quit")
@@ -1884,7 +1933,7 @@ class MainWindow(QMainWindow):
 
     def _show_privacy_dialog(self) -> None:
         dialog = GlassInfoDialog(
-            title="Privacy Promise",
+            title="Privacy Notice",
             text="Memact stores events, embeddings, and answers locally on this device. It does not call cloud APIs or send your activity off-machine.",
             parent=self,
         )

@@ -1,6 +1,6 @@
 # Memact
 
-Version: v0.0
+Version: v0.1
 
 Memact is a private desktop memory engine for personal actions.
 
@@ -99,6 +99,32 @@ pip install -r requirements.txt
 ```powershell
 python main.py
 ```
+
+## Release build (binary-only)
+
+Build a local release bundle with encrypted bytecode:
+
+```powershell
+scripts\build_release.ps1
+```
+
+The output is placed in `dist\memact-release` and does not include `.py` sources.
+
+## Local engine (compiled)
+
+Build the compiled local engine:
+
+```powershell
+scripts\build_engine.ps1
+```
+
+Run it in a separate terminal:
+
+```powershell
+scripts\run_engine.ps1
+```
+
+The UI will use the engine automatically when it is running.
 
 ## Notes
 

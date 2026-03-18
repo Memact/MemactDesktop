@@ -55,6 +55,7 @@ MEMACT_WINDOW_TOKENS = {
     "memact",
     "ask memact",
     "privacy promise",
+    "privacy notice",
 }
 
 
@@ -79,6 +80,10 @@ class BrowserContext:
     page_h1: str | None
     page_snippet: str | None
     selection_text: str | None
+    active_tag: str | None
+    active_type: str | None
+    is_typing: bool
+    is_scrolling: bool
 
 
 def _window_text(hwnd: int) -> str:
@@ -252,6 +257,10 @@ def get_browser_context(hwnd: int, app_name: str, window_title: str) -> BrowserC
             page_h1=None,
             page_snippet=None,
             selection_text=None,
+            active_tag=None,
+            active_type=None,
+            is_typing=False,
+            is_scrolling=False,
         )
 
     url = None
@@ -286,6 +295,10 @@ def get_browser_context(hwnd: int, app_name: str, window_title: str) -> BrowserC
             page_h1=None,
             page_snippet=None,
             selection_text=None,
+            active_tag=None,
+            active_type=None,
+            is_typing=False,
+            is_scrolling=False,
         )
 
     return BrowserContext(
@@ -298,6 +311,10 @@ def get_browser_context(hwnd: int, app_name: str, window_title: str) -> BrowserC
         page_h1=None,
         page_snippet=None,
         selection_text=None,
+        active_tag=None,
+        active_type=None,
+        is_typing=False,
+        is_scrolling=False,
     )
 
 
@@ -339,11 +356,17 @@ def _browser_context_from_extension(snapshot: WindowSnapshot, store: BrowserStat
         page_h1=session.page_h1,
         page_snippet=session.page_snippet,
         selection_text=session.selection_text,
+        active_tag=session.active_tag,
+        active_type=session.active_type,
+        is_typing=session.typing_active,
+        is_scrolling=session.scrolling_active,
     )
 
 
 def _compose_content_text(snapshot: WindowSnapshot, browser_context: BrowserContext) -> str:
     parts = [
+        "typing" if browser_context.is_typing else "",
+        "scrolling" if browser_context.is_scrolling else "",
         browser_context.selection_text or "",
         browser_context.page_title or "",
         browser_context.page_description or "",
@@ -384,9 +407,15 @@ class WindowMonitor(threading.Thread):
             page_h1=None,
             page_snippet=None,
             selection_text=None,
+            active_tag=None,
+            active_type=None,
+            is_typing=False,
+            is_scrolling=False,
         )
         self._last_snapshot: WindowSnapshot | None = None
         self._last_browser_context: BrowserContext | None = None
+        self._last_activity_kind: str | None = None
+        self._last_activity_at = 0.0
         self._last_error_at = 0.0
 
     def stop(self) -> None:
@@ -413,6 +442,10 @@ class WindowMonitor(threading.Thread):
         snapshot: WindowSnapshot,
         browser_context: BrowserContext,
     ) -> str:
+        if browser_context.is_typing:
+            return "typing"
+        if browser_context.is_scrolling:
+            return "scrolling"
         if self._last_snapshot is None:
             return "focus"
         if snapshot.app_name.lower() != self._last_snapshot.app_name.lower():
@@ -464,7 +497,21 @@ class WindowMonitor(threading.Thread):
                         self._emit_event(snapshot, browser_context, interaction_type)
                         self._last_snapshot = snapshot
                         self._last_browser_context = browser_context
+                        self._last_activity_kind = interaction_type
+                        self._last_activity_at = now
                     elif now - self._last_recorded_at >= self.heartbeat_interval:
+                        if browser_context.is_typing or browser_context.is_scrolling:
+                            activity_kind = "typing" if browser_context.is_typing else "scrolling"
+                            if (
+                                self._last_activity_kind != activity_kind
+                                or now - self._last_activity_at >= 6.0
+                            ):
+                                self._emit_event(snapshot, browser_context, activity_kind)
+                                self._last_snapshot = snapshot
+                                self._last_browser_context = browser_context
+                                self._last_activity_kind = activity_kind
+                                self._last_activity_at = now
+                                continue
                         self._emit_event(snapshot, browser_context, "heartbeat")
                         self._last_snapshot = snapshot
                         self._last_browser_context = browser_context
