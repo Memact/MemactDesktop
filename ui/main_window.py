@@ -1304,6 +1304,7 @@ class MainWindow(QMainWindow):
         self.header_container.setFixedWidth(home_width)
         self.suggestion_dock.setMinimumWidth(home_width)
         self.suggestion_dock.setMaximumWidth(home_width)
+        self.suggestion_dock.setFixedWidth(home_width)
         self.answer_card.setFixedWidth(answer_width)
 
         self.results_header_layout.setColumnMinimumWidth(0, left_width)
@@ -1314,6 +1315,8 @@ class MainWindow(QMainWindow):
         self.header_container.updateGeometry()
         self.answer_card.updateGeometry()
         self.results_header.updateGeometry()
+        if self.suggestion_dock.isVisible():
+            QTimer.singleShot(0, self._position_suggestion_dock)
 
     def _set_results_mode(self, active: bool) -> None:
         if self._results_mode == active:
@@ -1742,9 +1745,9 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._apply_responsive_sizes()
-        self._position_suggestion_dock()
         self.root.layout().invalidate()
         self.root.layout().activate()
+        QTimer.singleShot(0, self._position_suggestion_dock)
 
     def _show_menu(self) -> None:
         anchor = self.results_menu_button if self._results_mode else self.menu_button

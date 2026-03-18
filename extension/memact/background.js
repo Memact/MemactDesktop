@@ -33,6 +33,8 @@ async function snapshotFocusedWindow() {
         url: tab.url || "",
         active: Boolean(tab.active)
       }));
+    const activeTab = currentWindow.tabs.find((tab) => tab && tab.active);
+    const activeContext = activeTab ? await captureActiveTabContext(activeTab) : null;
 
     await fetch(BRIDGE_URL, {
       method: "POST",
@@ -40,7 +42,8 @@ async function snapshotFocusedWindow() {
       body: JSON.stringify({
         browser,
         windowId: currentWindow.id,
-        tabs
+        tabs,
+        activeContext
       })
     });
   } catch (error) {
@@ -49,6 +52,65 @@ async function snapshotFocusedWindow() {
 }
 
 let snapshotTimer = null;
+
+function normalizeText(value, maxLen) {
+  const text = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+  if (!maxLen) return text;
+  return text.length > maxLen ? `${text.slice(0, maxLen - 3)}...` : text;
+}
+
+async function captureActiveTabContext(tab) {
+  if (!tab || !tab.id || !tab.url) {
+    return null;
+  }
+  if (!/^https?:|^file:/i.test(tab.url)) {
+    return null;
+  }
+  try {
+    const [injected] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const readMeta = (key, attr = "name") => {
+          const selector = `meta[${attr}="${key}"]`;
+          const el = document.querySelector(selector);
+          return el ? el.getAttribute("content") || "" : "";
+        };
+        const ogTitle = readMeta("og:title", "property");
+        const ogDescription = readMeta("og:description", "property");
+        const description = readMeta("description") || ogDescription;
+        const pageTitle = document.title || ogTitle || "";
+        const h1 = document.querySelector("h1")?.innerText || "";
+        const selection = window.getSelection()?.toString() || "";
+        const article = document.querySelector("article") || document.querySelector("main");
+        const rawSnippet = article?.innerText || document.body?.innerText || "";
+        const snippet = rawSnippet.replace(/\s+/g, " ").trim().slice(0, 280);
+        return {
+          pageTitle,
+          description,
+          h1,
+          selection,
+          snippet
+        };
+      }
+    });
+    const result = injected && injected.result ? injected.result : null;
+    if (!result) {
+      return null;
+    }
+    return {
+      pageTitle: normalizeText(result.pageTitle, 140),
+      description: normalizeText(result.description, 200),
+      h1: normalizeText(result.h1, 120),
+      selection: normalizeText(result.selection, 200),
+      snippet: normalizeText(result.snippet, 280)
+    };
+  } catch (error) {
+    return null;
+  }
+}
 
 function queueSnapshot() {
   clearTimeout(snapshotTimer);

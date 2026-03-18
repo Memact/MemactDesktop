@@ -3,8 +3,9 @@
   "name": "Memact",
   "version": "0.0.0",
   "description": "Capture browser tab context for Memact.",
-  "permissions": ["tabs", "windows"],
+  "permissions": ["tabs", "windows", "scripting"],
   "host_permissions": [
+    "<all_urls>",
     "http://127.0.0.1:38453/*",
     "http://localhost:38453/*"
   ],

@@ -74,6 +74,11 @@ class BrowserContext:
     current_title: str | None
     tab_titles: list[str]
     tab_urls: list[str]
+    page_title: str | None
+    page_description: str | None
+    page_h1: str | None
+    page_snippet: str | None
+    selection_text: str | None
 
 
 def _window_text(hwnd: int) -> str:
@@ -237,7 +242,17 @@ def _normalize_browser_title(window_title: str, url: str | None, selected_title:
 def get_browser_context(hwnd: int, app_name: str, window_title: str) -> BrowserContext:
     app_name = app_name.lower()
     if not any(browser in app_name for browser in BROWSERS):
-        return BrowserContext(url=None, current_title=None, tab_titles=[], tab_urls=[])
+        return BrowserContext(
+            url=None,
+            current_title=None,
+            tab_titles=[],
+            tab_urls=[],
+            page_title=None,
+            page_description=None,
+            page_h1=None,
+            page_snippet=None,
+            selection_text=None,
+        )
 
     url = None
     tab_titles: list[str] = []
@@ -261,13 +276,28 @@ def get_browser_context(hwnd: int, app_name: str, window_title: str) -> BrowserC
             if _is_selected_tab(control):
                 selected_title = title
     except Exception:
-        return BrowserContext(url=url, current_title=None, tab_titles=tab_titles, tab_urls=tab_urls)
+        return BrowserContext(
+            url=url,
+            current_title=None,
+            tab_titles=tab_titles,
+            tab_urls=tab_urls,
+            page_title=None,
+            page_description=None,
+            page_h1=None,
+            page_snippet=None,
+            selection_text=None,
+        )
 
     return BrowserContext(
         url=url,
         current_title=_normalize_browser_title(window_title, url, selected_title),
         tab_titles=tab_titles,
         tab_urls=tab_urls,
+        page_title=None,
+        page_description=None,
+        page_h1=None,
+        page_snippet=None,
+        selection_text=None,
     )
 
 
@@ -304,11 +334,21 @@ def _browser_context_from_extension(snapshot: WindowSnapshot, store: BrowserStat
         ),
         tab_titles=session.tab_titles,
         tab_urls=session.tab_urls,
+        page_title=session.page_title,
+        page_description=session.page_description,
+        page_h1=session.page_h1,
+        page_snippet=session.page_snippet,
+        selection_text=session.selection_text,
     )
 
 
 def _compose_content_text(snapshot: WindowSnapshot, browser_context: BrowserContext) -> str:
     parts = [
+        browser_context.selection_text or "",
+        browser_context.page_title or "",
+        browser_context.page_description or "",
+        browser_context.page_h1 or "",
+        browser_context.page_snippet or "",
         browser_context.current_title or snapshot.title,
         snapshot.title,
         " ".join(browser_context.tab_titles[:8]),
@@ -339,6 +379,11 @@ class WindowMonitor(threading.Thread):
             current_title=None,
             tab_titles=[],
             tab_urls=[],
+            page_title=None,
+            page_description=None,
+            page_h1=None,
+            page_snippet=None,
+            selection_text=None,
         )
         self._last_snapshot: WindowSnapshot | None = None
         self._last_browser_context: BrowserContext | None = None

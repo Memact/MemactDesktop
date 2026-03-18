@@ -635,27 +635,48 @@ def _moment_summary(
     return primary
 
 
+def _action_verb(interaction_types: set[str]) -> str | None:
+    if "navigate" in interaction_types:
+        return "Opened"
+    if "tab_switch" in interaction_types:
+        return "Switched to"
+    if "app_switch" in interaction_types:
+        return "Switched to"
+    if "context_change" in interaction_types:
+        return "Opened"
+    return None
+
+
 def _session_title(
     label: str,
     application: str,
     url: str | None,
     duration_seconds: int,
+    *,
+    interaction_types: set[str] | None = None,
 ) -> str:
     app_name = _friendly_app_name(application)
     clean_label = _dedupe_label_against_app(label, application)
     domain = _domain(url)
     lower_app = app_name.casefold()
+    verb = _action_verb(interaction_types or set())
 
     if domain:
+        if verb:
+            return f"{verb} {domain}"
         if any(browser in lower_app for browser in ("edge", "chrome", "firefox", "browser", "safari", "brave")):
             return f"Browsing {domain}"
         return f"Using {domain} in {app_name}"
 
     if clean_label and clean_label.casefold() != app_name.casefold():
+        if verb:
+            return f"{verb} {clean_label}"
         if duration_seconds >= 8 * 60:
             return f"Working on {clean_label}"
         return f"Using {clean_label}"
 
+    if verb:
+        return f"{verb} {app_name}"
     if duration_seconds >= 8 * 60:
         return f"Working in {app_name}"
     return f"Using {app_name}"
@@ -826,14 +847,19 @@ def _build_spans(
             )
         elif app_hint:
             context_filter = lambda event: _event_matches_app(event, app_hint)
-        before_context = _context_summary(before_events, current_ids, context_filter=context_filter)
-        after_context = _context_summary(after_events, current_ids, context_filter=context_filter)
+        before_context = _context_summary(before_events, current_ids, context_filter=None)
+        after_context = _context_summary(after_events, current_ids, context_filter=None)
+        if context_filter is not None:
+            before_context = _context_summary(before_events, current_ids, context_filter=context_filter) or before_context
+            after_context = _context_summary(after_events, current_ids, context_filter=context_filter) or after_context
         display_label = _event_label(best_event)
+        interaction_types = {event.interaction_type.casefold() for event in current_events}
         session_title = _session_title(
             display_label,
             best_event.application,
             best_event.url,
             duration_seconds,
+            interaction_types=interaction_types,
         )
         tab_preview = _tab_preview(current_events)
         attention_cue = _attention_cue(current_events, duration_seconds, best_event.url)

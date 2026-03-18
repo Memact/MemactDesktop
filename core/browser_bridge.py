@@ -21,6 +21,11 @@ class BrowserSession:
     current_url: str | None
     tab_titles: list[str]
     tab_urls: list[str]
+    page_title: str | None
+    page_description: str | None
+    page_h1: str | None
+    page_snippet: str | None
+    selection_text: str | None
 
 
 class BrowserStateStore:
@@ -38,6 +43,12 @@ class BrowserStateStore:
         tab_urls: list[str] = []
         current_title = None
         current_url = None
+        active_context = payload.get("activeContext") or {}
+        page_title = str(active_context.get("pageTitle", "")).strip() or None
+        page_description = str(active_context.get("description", "")).strip() or None
+        page_h1 = str(active_context.get("h1", "")).strip() or None
+        page_snippet = str(active_context.get("snippet", "")).strip() or None
+        selection_text = str(active_context.get("selection", "")).strip() or None
 
         for item in tabs[:MAX_TABS]:
             if not isinstance(item, dict):
@@ -63,6 +74,11 @@ class BrowserStateStore:
             current_url=current_url,
             tab_titles=tab_titles,
             tab_urls=tab_urls,
+            page_title=page_title,
+            page_description=page_description,
+            page_h1=page_h1,
+            page_snippet=page_snippet,
+            selection_text=selection_text,
         )
         with self._lock:
             self._sessions[browser] = session
