@@ -878,7 +878,7 @@ class MainWindow(QMainWindow):
         results_header_layout = QGridLayout(self.results_header)
         self.results_header_layout = results_header_layout
         results_header_layout.setContentsMargins(0, 0, 0, 0)
-        results_header_layout.setHorizontalSpacing(14)
+        results_header_layout.setHorizontalSpacing(12)
         results_header_layout.setVerticalSpacing(0)
         self.results_left_controls = QWidget()
         results_left_layout = QHBoxLayout(self.results_left_controls)
@@ -886,11 +886,10 @@ class MainWindow(QMainWindow):
         results_left_layout.setSpacing(14)
         self.results_divider = QFrame()
         self.results_divider.setObjectName("ResultsDivider")
-        self.results_divider.setFixedSize(1, 32)
+        self.results_divider.setFixedSize(1, 36)
         results_left_layout.addWidget(self.compact_brand_host, 0, Qt.AlignmentFlag.AlignVCenter)
         results_left_layout.addWidget(self.back_orb, 0, Qt.AlignmentFlag.AlignVCenter)
         results_left_layout.addWidget(self.reload_orb, 0, Qt.AlignmentFlag.AlignVCenter)
-        results_left_layout.addWidget(self.results_divider, 0, Qt.AlignmentFlag.AlignVCenter)
         self.results_menu_orb = QFrame()
         self.results_menu_orb.setObjectName("MenuOrb")
         self.results_menu_orb.setFixedSize(orb_size, orb_size)
@@ -908,8 +907,7 @@ class MainWindow(QMainWindow):
         right_controls_layout.setSpacing(14)
         self.results_menu_divider = QFrame()
         self.results_menu_divider.setObjectName("ResultsDivider")
-        self.results_menu_divider.setFixedSize(1, 32)
-        right_controls_layout.addWidget(self.results_menu_divider, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.results_menu_divider.setFixedSize(1, 36)
         right_controls_layout.addWidget(self.results_menu_orb, 0, Qt.AlignmentFlag.AlignVCenter)
 
         results_header_layout.addWidget(
@@ -919,14 +917,28 @@ class MainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
         )
         results_header_layout.addWidget(
+            self.results_divider,
+            0,
+            1,
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+        )
+        results_header_layout.addWidget(
             self.results_right_controls,
             0,
-            2,
+            4,
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
         )
+        results_header_layout.addWidget(
+            self.results_menu_divider,
+            0,
+            3,
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+        )
         results_header_layout.setColumnStretch(0, 0)
-        results_header_layout.setColumnStretch(1, 1)
-        results_header_layout.setColumnStretch(2, 0)
+        results_header_layout.setColumnStretch(1, 0)
+        results_header_layout.setColumnStretch(2, 1)
+        results_header_layout.setColumnStretch(3, 0)
+        results_header_layout.setColumnStretch(4, 0)
         self.results_header.hide()
         top_bar.addWidget(
             self.results_header,
@@ -1365,6 +1377,8 @@ class MainWindow(QMainWindow):
         self.reload_orb.setVisible(show_back)
         if hasattr(self, "results_divider"):
             self.results_divider.setVisible(show_back)
+        if hasattr(self, "results_menu_divider"):
+            self.results_menu_divider.setVisible(show_back)
 
     def _menu_stylesheet(self) -> str:
         return """
@@ -1522,7 +1536,12 @@ class MainWindow(QMainWindow):
         left_width = self.results_left_controls.sizeHint().width()
         right_width = self.results_right_controls.sizeHint().width()
         spacing = self.results_header_layout.horizontalSpacing()
-        center_available = max(1, available - left_width - right_width - (spacing * 2))
+        divider_left = self.results_divider.width() if hasattr(self, "results_divider") else 0
+        divider_right = self.results_menu_divider.width() if hasattr(self, "results_menu_divider") else 0
+        center_available = max(
+            1,
+            available - left_width - right_width - divider_left - divider_right - (spacing * 4),
+        )
         center_safe = max(1, center_available - 12)
         min_width = min(self._min_content_width, center_available)
         if self._results_mode:
@@ -1546,7 +1565,7 @@ class MainWindow(QMainWindow):
         self.answer_card.setFixedWidth(answer_width)
 
         self.results_header_layout.setColumnMinimumWidth(0, left_width)
-        self.results_header_layout.setColumnMinimumWidth(2, right_width)
+        self.results_header_layout.setColumnMinimumWidth(4, right_width)
 
         self.home_menu_slot.setFixedHeight(self._results_header_height)
         self.search_shell.updateGeometry()
@@ -1584,7 +1603,7 @@ class MainWindow(QMainWindow):
                 self.results_header_layout.addWidget(
                     self.header_container,
                     0,
-                    1,
+                    2,
                     Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
                 )
             self.header_layout.setSpacing(0)
