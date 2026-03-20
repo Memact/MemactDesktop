@@ -87,6 +87,15 @@ The app is minimal by design:
 
 ---
 
+**Button & Color Principles**
+
+- Primary actions use the accent blue tint: background `rgba(40, 74, 128, 0.08)` with hover `rgba(40, 74, 128, 0.16)` and border `rgba(40, 74, 128, 0.16)`.
+- Secondary/supporting actions use the neutral white tint: background `rgba(255, 255, 255, 0.08)` with hover `rgba(255, 255, 255, 0.16)` and border `rgba(255, 255, 255, 0.16)`.
+- Ghost/icon buttons are transparent at rest and pick up a subtle hover tint.
+- Destructive actions may use a red accent on hover to signal caution.
+
+---
+
 **Browser Support**
 
 Memact includes a local extension for Chromium-based browsers.
