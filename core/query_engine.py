@@ -23,6 +23,7 @@ from core.meaning_extractor import extract_query_meaning, warmup_spacy
 from core.semantic import cosine_similarity, embed_text, tokenize
 from core.skill_loader import Skill, get_skills
 from core.skill_router import route_skill
+from core.duration import answer_duration_query
 from core.vector_store import ensure_seeded, is_available as chroma_available, query_event_ids, upsert_events
 
 
@@ -1960,6 +1961,17 @@ def answer_query(query: str) -> QueryAnswer:
 
     skills = get_skills()
     active_skill = route_skill(query, skills)
+    if active_skill and active_skill.name == "duration_query":
+        duration_answer = answer_duration_query(meaning)
+        return QueryAnswer(
+            answer=duration_answer,
+            summary="",
+            details_label="",
+            evidence=[],
+            time_scope_label=meaning.time_text or "today",
+            result_count=0,
+            related_queries=[],
+        )
     skill_filters = _skill_filters(active_skill)
     skill_priority = active_skill.priority if active_skill else None
     skill_limit = _skill_result_limit(active_skill)

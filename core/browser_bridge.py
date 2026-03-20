@@ -34,9 +34,10 @@ class BrowserSession:
 
 
 class BrowserStateStore:
-    def __init__(self) -> None:
+    def __init__(self, on_update=None) -> None:
         self._lock = threading.Lock()
         self._sessions: dict[str, BrowserSession] = {}
+        self._on_update = on_update
 
     def update(self, payload: dict) -> None:
         browser = str(payload.get("browser", "")).lower().strip()
@@ -97,6 +98,11 @@ class BrowserStateStore:
         )
         with self._lock:
             self._sessions[browser] = session
+        if self._on_update is not None:
+            try:
+                self._on_update(session)
+            except Exception:
+                logger.exception("Browser session update callback failed")
 
     def get(self, browser: str) -> BrowserSession | None:
         with self._lock:

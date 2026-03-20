@@ -192,25 +192,32 @@ def launch_extension_setup(browser: BrowserInstall, extension_dir: Path) -> None
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = 0
-    try:
-        subprocess.Popen(
-            [
-                browser.exe_path,
-                "--new-window",
-                "--no-first-run",
-                f"--disable-extensions-except={extension_dir}",
-                f"--load-extension={extension_dir}",
-                browser.extensions_url,
-            ],
-            creationflags=(
-                subprocess.DETACHED_PROCESS
-                | subprocess.CREATE_NEW_PROCESS_GROUP
-                | subprocess.CREATE_NO_WINDOW
-            ),
-            startupinfo=startupinfo,
-        )
-    except Exception:
-        pass
+    if browser.extensions_url:
+        try:
+            subprocess.Popen(
+                [
+                    browser.exe_path,
+                    "--new-window",
+                    "--no-first-run",
+                    browser.extensions_url,
+                ],
+                creationflags=(
+                    subprocess.DETACHED_PROCESS
+                    | subprocess.CREATE_NEW_PROCESS_GROUP
+                    | subprocess.CREATE_NO_WINDOW
+                ),
+                startupinfo=startupinfo,
+            )
+        except Exception:
+            try:
+                os.startfile(browser.extensions_url)
+            except Exception:
+                try:
+                    import webbrowser
+
+                    webbrowser.open(browser.extensions_url)
+                except Exception:
+                    pass
 
     try:
         os.startfile(extension_dir)

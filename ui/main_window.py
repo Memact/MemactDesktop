@@ -470,7 +470,13 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(app_icon())
 
         self.settings = load_settings()
-        self.browser_state_store = BrowserStateStore()
+        stored_versions = self.settings.get("extension_versions")
+        self._extension_versions = (
+            {str(key): str(value) for key, value in stored_versions.items() if value}
+            if isinstance(stored_versions, dict)
+            else {}
+        )
+        self.browser_state_store = BrowserStateStore(on_update=self._handle_browser_session)
         self.browser_bridge = BrowserBridgeServer(self.browser_state_store)
         self.monitor = WindowMonitor(
             on_new_event=lambda: self._bridge.new_event.emit(),
@@ -2065,6 +2071,8 @@ class MainWindow(QMainWindow):
         y = max(available.top(), min(y, available.bottom() - menu_size.height()))
         self.tray_menu.popup(QPoint(x, y))
         self.tray_menu.raise_()
+        if self._tray_hide_timer.isActive():
+            self._tray_hide_timer.stop()
 
     def show_window(self) -> None:
         self.show()
@@ -2186,7 +2194,21 @@ class MainWindow(QMainWindow):
         )
 
     def _is_browser_extension_ready(self, browser) -> bool:
-        return self.browser_state_store.has_session(browser.key)
+        return self._browser_extension_status(browser) == "ready"
+
+    def _record_extension_version(self, browser_key: str, version: str) -> None:
+        if not browser_key or not version:
+            return
+        if self._extension_versions.get(browser_key) == version:
+            return
+        self._extension_versions[browser_key] = version
+        self.settings["extension_versions"] = dict(self._extension_versions)
+        save_settings(self.settings)
+
+    def _handle_browser_session(self, session) -> None:
+        if not getattr(session, "extension_version", None):
+            return
+        QTimer.singleShot(0, lambda: self._record_extension_version(session.browser, session.extension_version))
 
     def _current_extension_version(self) -> str | None:
         cached = getattr(self, "_extension_version_cache", None)
@@ -2215,16 +2237,16 @@ class MainWindow(QMainWindow):
 
     def _browser_extension_status(self, browser) -> str:
         session = self.browser_state_store.get(browser.key)
-        if session is None:
-            return "setup"
         current = self._current_extension_version()
-        session_version = session.extension_version
-        if current and session_version:
-            if self._version_tuple(current) == self._version_tuple(session_version):
-                return "ready"
-            return "update"
+        session_version = session.extension_version if session else None
         if session_version:
-            return "update"
+            self._record_extension_version(browser.key, session_version)
+        stored_version = self._extension_versions.get(browser.key)
+        effective_version = session_version or stored_version
+        if not effective_version:
+            return "setup"
+        if current and self._version_tuple(current) == self._version_tuple(effective_version):
+            return "ready"
         return "update"
 
     def _show_privacy_dialog(self) -> None:
