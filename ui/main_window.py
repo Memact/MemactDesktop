@@ -3,6 +3,7 @@
 import json
 import logging
 import threading
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 import os
@@ -45,6 +46,7 @@ from core.query_engine import (
     autocomplete_suggestions,
     dynamic_suggestions,
 )
+from core.search_history import add_history, clear_history, load_history, remove_history
 from core.settings import load_settings, save_settings
 from ui.branding import app_icon
 from ui.fonts import body_font, brand_font
@@ -236,6 +238,34 @@ class SuggestionCard(QFrame):
         super().leaveEvent(event)
 
 
+class HistoryRow(QFrame):
+    clicked = pyqtSignal(str)
+
+    def __init__(self, query: str, parent=None) -> None:
+        super().__init__(parent)
+        self._query = query
+        self.setObjectName("HistoryRow")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setProperty("hovered", False)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._query)
+        super().mousePressEvent(event)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self.setProperty("hovered", True)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self.setProperty("hovered", False)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        super().leaveEvent(event)
+
+
 class EvidenceCard(QFrame):
     def __init__(self, span: ActivitySpan, parent=None) -> None:
         super().__init__(parent)
@@ -374,16 +404,16 @@ class GlassInfoDialog(QDialog):
                 font-weight: 600;
             }
             QPushButton {
-                background: rgba(40, 74, 128, 0.22);
+                background: rgba(40, 74, 128, 0.08);
                 color: #ffffff;
-                border: 1px solid rgba(40, 74, 128, 0.35);
+                border: 1px solid rgba(40, 74, 128, 0.16);
                 border-radius: 14px;
                 padding: 10px 18px;
                 min-width: 110px;
                 font-size: 15px;
             }
             QPushButton:hover {
-                background: rgba(40, 74, 128, 0.3);
+                background: rgba(40, 74, 128, 0.16);
             }
             """
         )
@@ -427,11 +457,234 @@ class GlassInfoDialog(QDialog):
         actions = QHBoxLayout()
         actions.addStretch(1)
         ok_button = QPushButton("OK")
+        ok_button.setCursor(Qt.CursorShape.PointingHandCursor)
         ok_button.clicked.connect(self.accept)
         actions.addWidget(ok_button)
         panel_layout.addLayout(actions)
 
         shell.addWidget(panel)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        apply_native_window_theme(self)
+
+
+class SearchHistoryDialog(QDialog):
+    def __init__(self, history: list[dict], on_clear, on_select, on_delete, parent=None) -> None:
+        super().__init__(parent)
+        self._history = history
+        self._on_clear = on_clear
+        self._on_select = on_select
+        self._on_delete = on_delete
+        self.setModal(True)
+        self.setWindowTitle("Search history")
+        self.setFont(body_font(12))
+        self.resize(680, 520)
+        self.setWindowIcon(app_icon())
+
+        self.setStyleSheet(
+            """
+            QDialog {
+                background: #00011B;
+                color: #ffffff;
+            }
+            QFrame#DialogPanel {
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 24px;
+            }
+            QLabel#DialogTitle {
+                color: #ffffff;
+                font-size: 24px;
+            }
+            QLabel#DialogBody {
+                color: rgba(255, 255, 255, 0.74);
+                font-size: 15px;
+            }
+            QScrollArea#HistoryScroll {
+                background: transparent;
+                border: none;
+            }
+            QScrollArea#HistoryScroll QWidget#qt_scrollarea_viewport {
+                background: transparent;
+            }
+            QWidget#HistoryContent {
+                background: transparent;
+            }
+            QFrame#HistoryRow {
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 14px;
+            }
+            QFrame#HistoryRow[hovered="true"] {
+                background: rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+            }
+            QLabel#HistoryQuery {
+                color: #ffffff;
+                font-size: 15px;
+            }
+            QLabel#HistoryTime {
+                color: rgba(255, 255, 255, 0.58);
+                font-size: 12px;
+            }
+            QPushButton#HistoryDeleteButton {
+                background: rgba(255, 255, 255, 0.08);
+                color: #ffffff;
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 10px;
+                min-width: 28px;
+                min-height: 28px;
+                padding: 0;
+                font-size: 14px;
+                font-weight: 600;
+            }
+            QPushButton#HistoryDeleteButton:hover {
+                background: rgba(255, 255, 255, 0.16);
+            }
+            QPushButton#ClearButton {
+                background: rgba(255, 255, 255, 0.08);
+                color: #ffffff;
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 12px;
+                padding: 8px 14px;
+            }
+            QPushButton#ClearButton:hover {
+                background: rgba(255, 255, 255, 0.16);
+            }
+            QPushButton#CloseButton {
+                background: rgba(40, 74, 128, 0.08);
+                color: #ffffff;
+                border: 1px solid rgba(40, 74, 128, 0.16);
+                border-radius: 12px;
+                padding: 8px 14px;
+            }
+            QPushButton#CloseButton:hover {
+                background: rgba(40, 74, 128, 0.16);
+            }
+            """
+        )
+
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(20, 20, 20, 20)
+
+        panel = QFrame()
+        panel.setObjectName("DialogPanel")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(22, 22, 22, 22)
+        panel_layout.setSpacing(16)
+
+        title = QLabel("Search history")
+        title.setObjectName("DialogTitle")
+        subtitle = QLabel("Your recent searches are stored locally on this device.")
+        subtitle.setObjectName("DialogBody")
+        subtitle.setWordWrap(True)
+
+        panel_layout.addWidget(title)
+        panel_layout.addWidget(subtitle)
+
+        self._scroll = QScrollArea()
+        self._scroll.setObjectName("HistoryScroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        self._content = QWidget()
+        self._content.setObjectName("HistoryContent")
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setSpacing(10)
+        self._scroll.setWidget(self._content)
+
+        panel_layout.addWidget(self._scroll, 1)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        clear_button = QPushButton("Clear history")
+        clear_button.setObjectName("ClearButton")
+        clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_button.clicked.connect(self._clear_history)
+        close_button = QPushButton("Close")
+        close_button.setObjectName("CloseButton")
+        close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_button.clicked.connect(self.accept)
+        actions.addWidget(clear_button)
+        actions.addWidget(close_button)
+        panel_layout.addLayout(actions)
+
+        shell.addWidget(panel)
+        self._render_history()
+
+    def _clear_history(self) -> None:
+        self._on_clear()
+        self._history = []
+        self._render_history()
+
+    def _select_query(self, query: str) -> None:
+        if not query:
+            return
+        self._on_select(query)
+        self.accept()
+
+    def _delete_query(self, query: str) -> None:
+        if not query:
+            return
+        self._on_delete(query)
+        key = query.casefold()
+        self._history = [entry for entry in self._history if str(entry.get("query", "")).casefold() != key]
+        self._render_history()
+
+    def _render_history(self) -> None:
+        while self._content_layout.count():
+            item = self._content_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        if not self._history:
+            empty = QLabel("No searches yet.")
+            empty.setObjectName("DialogBody")
+            self._content_layout.addWidget(empty)
+            self._content_layout.addStretch(1)
+            return
+
+        for entry in self._history:
+            query = str(entry.get("query", "")).strip()
+            timestamp = str(entry.get("timestamp", "")).strip()
+            if not query:
+                continue
+            readable = timestamp
+            try:
+                parsed = datetime.fromisoformat(timestamp)
+                readable = parsed.strftime("%b %d • %I:%M %p").lstrip("0").replace(" 0", " ")
+            except Exception:
+                pass
+
+            row = HistoryRow(query)
+            row.clicked.connect(self._select_query)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(14, 10, 14, 10)
+            row_layout.setSpacing(12)
+            text_col = QVBoxLayout()
+            text_col.setContentsMargins(0, 0, 0, 0)
+            text_col.setSpacing(6)
+            query_label = QLabel(query)
+            query_label.setObjectName("HistoryQuery")
+            query_label.setWordWrap(True)
+            time_label = QLabel(readable)
+            time_label.setObjectName("HistoryTime")
+            text_col.addWidget(query_label)
+            text_col.addWidget(time_label)
+            row_layout.addLayout(text_col, 1)
+
+            delete_button = QPushButton("×")
+            delete_button.setObjectName("HistoryDeleteButton")
+            delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            delete_button.clicked.connect(lambda _checked=False, value=query: self._delete_query(value))
+            row_layout.addWidget(delete_button, 0, Qt.AlignmentFlag.AlignTop)
+
+            self._content_layout.addWidget(row)
+
+        self._content_layout.addStretch(1)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -536,7 +789,7 @@ class MainWindow(QMainWindow):
                 font-weight: 600;
             }
             QPushButton#MenuButton:hover {
-                background: rgba(255, 255, 255, 0.08);
+                background: rgba(255, 255, 255, 0.16);
             }
             QLabel#HeroTitle {
                 color: #ffffff;
@@ -598,7 +851,7 @@ class MainWindow(QMainWindow):
                 padding: 0;
             }
             QPushButton#SearchButton:hover {
-                background: rgba(255, 255, 255, 0.08);
+                background: rgba(255, 255, 255, 0.16);
                 border-radius: 12px;
             }
             QFrame#SuggestionDock {
@@ -751,16 +1004,16 @@ class MainWindow(QMainWindow):
                 font-weight: 600;
             }
             QPushButton#EvidenceLinkButton {
-                background: rgba(40, 74, 128, 0.12);
+                background: rgba(40, 74, 128, 0.08);
                 color: #ffffff;
-                border: 1px solid rgba(40, 74, 128, 0.24);
+                border: 1px solid rgba(40, 74, 128, 0.16);
                 border-radius: 12px;
                 padding: 6px 12px;
                 font-size: 12px;
                 font-weight: 600;
             }
             QPushButton#EvidenceLinkButton:hover {
-                background: rgba(40, 74, 128, 0.2);
+                background: rgba(40, 74, 128, 0.16);
             }
             QLabel#EvidenceAttention {
                 color: rgba(255, 255, 255, 0.76);
@@ -802,17 +1055,17 @@ class MainWindow(QMainWindow):
                 letter-spacing: 1px;
             }
             QPushButton#RefineButton {
-                background: rgba(255, 255, 255, 0.045);
+                background: rgba(255, 255, 255, 0.08);
                 color: #ffffff;
-                border: 1px solid rgba(255, 255, 255, 0.12);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 14px;
                 padding: 10px 14px;
                 font-size: 13px;
                 text-align: left;
             }
             QPushButton#RefineButton:hover {
-                background: rgba(255, 255, 255, 0.1);
-                border: 1px solid rgba(255, 255, 255, 0.22);
+                background: rgba(255, 255, 255, 0.16);
+                border: 1px solid rgba(255, 255, 255, 0.16);
             }
             QLabel#StatusText {
                 color: rgba(255, 255, 255, 0.68);
@@ -1202,6 +1455,8 @@ class MainWindow(QMainWindow):
         install_action.triggered.connect(self._open_browser_setup_from_menu)
         privacy_action = self.overflow_menu.addAction("Privacy Notice")
         privacy_action.triggered.connect(self._show_privacy_dialog)
+        history_action = self.overflow_menu.addAction("Search History")
+        history_action.triggered.connect(self._show_search_history)
         self.overflow_menu.addSeparator()
         self._add_quit_action(self.overflow_menu)
 
@@ -1412,7 +1667,7 @@ class MainWindow(QMainWindow):
                 text-align: left;
             }
             QPushButton#MenuDangerButton:hover {
-                background: rgba(255, 86, 86, 0.26);
+                background: rgba(255, 86, 86, 0.16);
                 border: none;
             }
         """
@@ -1893,6 +2148,7 @@ class MainWindow(QMainWindow):
         self._query_request_id += 1
         request_id = self._query_request_id
         self._typed_query_before_selection = query
+        add_history(query)
         self.search_input.setProperty("suggestionSelected", False)
         self._set_preview_state(False)
         self.status_text.setText("Searching locally...")
@@ -2266,6 +2522,16 @@ class MainWindow(QMainWindow):
         )
         dialog.exec()
 
+    def _show_search_history(self) -> None:
+        history = load_history()
+        dialog = SearchHistoryDialog(history, clear_history, self._apply_history_query, remove_history, parent=self)
+        dialog.exec()
+
+    def _apply_history_query(self, query: str) -> None:
+        if not query:
+            return
+        self._apply_suggestion(query)
+
     def _style_dialog(self, dialog: QMessageBox) -> None:
         dialog.setFont(body_font(12))
         dialog.setStyleSheet(
@@ -2280,16 +2546,16 @@ class MainWindow(QMainWindow):
                 min-width: 340px;
             }
             QMessageBox QPushButton {
-                background: rgba(40, 74, 128, 0.22);
+                background: rgba(40, 74, 128, 0.08);
                 color: #ffffff;
-                border: 1px solid rgba(40, 74, 128, 0.35);
+                border: 1px solid rgba(40, 74, 128, 0.16);
                 border-radius: 12px;
                 padding: 9px 16px;
                 min-width: 96px;
                 font-size: 14px;
             }
             QMessageBox QPushButton:hover {
-                background: rgba(40, 74, 128, 0.3);
+                background: rgba(40, 74, 128, 0.16);
             }
             """
         )
@@ -2302,6 +2568,8 @@ class MainWindow(QMainWindow):
         dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
         dialog.setWindowIcon(app_icon())
         self._style_dialog(dialog)
+        for button in dialog.findChildren(QPushButton):
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
         apply_native_window_theme(dialog)
         dialog.exec()
 
@@ -2314,5 +2582,7 @@ class MainWindow(QMainWindow):
         dialog.setDefaultButton(QMessageBox.StandardButton.Ok)
         dialog.setWindowIcon(app_icon())
         self._style_dialog(dialog)
+        for button in dialog.findChildren(QPushButton):
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
         apply_native_window_theme(dialog)
         return dialog.exec() == QMessageBox.StandardButton.Ok

@@ -74,8 +74,8 @@ class BrowserSetupDialog(QDialog):
             }
             QLabel#StepIndex {
                 color: #ffffff;
-                background: rgba(40, 74, 128, 0.22);
-                border: 1px solid rgba(40, 74, 128, 0.35);
+                background: rgba(40, 74, 128, 0.08);
+                border: 1px solid rgba(40, 74, 128, 0.16);
                 border-radius: 12px;
                 padding: 4px 8px;
                 min-width: 10px;
@@ -113,22 +113,22 @@ class BrowserSetupDialog(QDialog):
                 font-weight: 700;
             }
             QPushButton {
-                background: rgba(40, 74, 128, 0.22);
+                background: rgba(40, 74, 128, 0.08);
                 color: #ffffff;
-                border: 1px solid rgba(40, 74, 128, 0.35);
+                border: 1px solid rgba(40, 74, 128, 0.16);
                 border-radius: 14px;
                 padding: 10px 18px;
                 font-size: 14px;
             }
             QPushButton:hover {
-                background: rgba(40, 74, 128, 0.3);
+                background: rgba(40, 74, 128, 0.16);
             }
             QPushButton#SecondaryButton {
-                background: rgba(255, 255, 255, 0.05);
+                background: rgba(255, 255, 255, 0.08);
                 border: 1px solid rgba(255, 255, 255, 0.16);
             }
             QPushButton#SecondaryButton:hover {
-                background: rgba(255, 255, 255, 0.1);
+                background: rgba(255, 255, 255, 0.16);
             }
             QScrollBar:vertical {
                 background: transparent;
@@ -200,9 +200,11 @@ class BrowserSetupDialog(QDialog):
         footer.setSpacing(10)
         help_button = QPushButton("Open browser help")
         help_button.setObjectName("SecondaryButton")
+        help_button.setCursor(Qt.CursorShape.PointingHandCursor)
         help_button.clicked.connect(self._open_help_for_first_browser)
         later_button = QPushButton("Later")
         later_button.setObjectName("SecondaryButton")
+        later_button.setCursor(Qt.CursorShape.PointingHandCursor)
         later_button.clicked.connect(self.accept)
         footer.addWidget(help_button)
         footer.addStretch(1)
@@ -285,6 +287,7 @@ class BrowserSetupDialog(QDialog):
         setup_label = "Update" if status == "update" else "Open setup"
         setup_button = QPushButton(setup_label)
         setup_button.setEnabled(browser.supported)
+        setup_button.setCursor(Qt.CursorShape.PointingHandCursor)
         setup_button.clicked.connect(
             lambda _checked=False, selected=browser: self._handle_setup(selected)
         )
