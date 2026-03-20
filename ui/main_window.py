@@ -3,6 +3,7 @@
 import logging
 import threading
 from pathlib import Path
+from urllib.parse import urlparse
 
 from PyQt6.QtCore import QObject, QPoint, QRectF, QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QCursor, QDesktopServices, QIcon, QPainter, QPainterPath, QRegion
@@ -17,6 +18,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QScrollArea,
+    QProgressBar,
     QPushButton,
     QSpacerItem,
     QSizePolicy,
@@ -58,6 +60,50 @@ def _domain_chip(url: str | None) -> str | None:
         return None
     text = url.split("://", 1)[-1].split("/", 1)[0].removeprefix("www.")
     return text or None
+
+
+def _best_url_for_span(span: ActivitySpan) -> str | None:
+    span_domain = _domain_chip(span.url)
+    best_url: str | None = None
+    best_score = -1
+    for event in span.events:
+        for url in event.urls:
+            if not url:
+                continue
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                continue
+            if not parsed.netloc:
+                continue
+            domain = parsed.netloc.removeprefix("www.")
+            if span_domain and domain != span_domain:
+                continue
+            score = 0
+            if parsed.path and parsed.path != "/":
+                score += 10 + len(parsed.path)
+            if parsed.query:
+                score += 2 + len(parsed.query)
+            if parsed.fragment:
+                score += 1
+            if score > best_score:
+                best_score = score
+                best_url = url
+    return best_url or span.url
+
+
+def _link_label(url: str | None) -> str:
+    if not url:
+        return "Open link"
+    parsed = urlparse(url)
+    domain = parsed.netloc.removeprefix("www.")
+    if not domain:
+        return "Open link"
+    display = domain
+    if parsed.path and parsed.path != "/":
+        display = f"{domain}{parsed.path}"
+    if len(display) > 52:
+        display = display[:49] + "…"
+    return f"Open {display}"
 
 
 def _duration_chip(seconds: int) -> str:
@@ -224,11 +270,12 @@ class EvidenceCard(QFrame):
         meta.setWordWrap(True)
 
         link_button = None
-        domain = _domain_chip(span.url)
-        if span.url and domain:
-            link_button = QPushButton(f"Open {domain}")
+        best_url = _best_url_for_span(span)
+        domain = _domain_chip(best_url)
+        if best_url and domain:
+            link_button = QPushButton(_link_label(best_url))
             link_button.setObjectName("EvidenceLinkButton")
-            link_button.clicked.connect(lambda _checked=False, value=span.url: QDesktopServices.openUrl(QUrl(value)))
+            link_button.clicked.connect(lambda _checked=False, value=best_url: QDesktopServices.openUrl(QUrl(value)))
 
         if span.attention_cue:
             attention = QLabel(span.attention_cue)
@@ -507,6 +554,15 @@ class MainWindow(QMainWindow):
             QFrame#ResultsDivider {
                 background: rgba(255, 255, 255, 0.32);
                 border-radius: 1px;
+            }
+            QProgressBar#LoadingBar {
+                background: rgba(255, 255, 255, 0.08);
+                border: none;
+                border-radius: 2px;
+            }
+            QProgressBar#LoadingBar::chunk {
+                background: #ffffff;
+                border-radius: 2px;
             }
             QLineEdit#SearchInput {
                 background: transparent;
@@ -1039,6 +1095,14 @@ class MainWindow(QMainWindow):
         self.status_text.setObjectName("StatusText")
         self.status_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        self.loading_bar = QProgressBar()
+        self.loading_bar.setObjectName("LoadingBar")
+        self.loading_bar.setTextVisible(False)
+        self.loading_bar.setRange(0, 0)
+        self.loading_bar.setFixedHeight(3)
+        self.loading_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.loading_bar.hide()
+
         self.results_separator = QWidget()
         self.results_separator.setSizePolicy(
             QSizePolicy.Policy.Expanding,
@@ -1071,6 +1135,7 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Expanding,
         )
         layout.addItem(self.bottom_spacer)
+        layout.addWidget(self.loading_bar, 0, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
         layout.addWidget(self.status_text, 0, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
 
         self.setCentralWidget(root)
@@ -1145,6 +1210,7 @@ class MainWindow(QMainWindow):
 
     def _handle_runtime_failed(self, message: str) -> None:
         self.status_text.setText("Memact could not start the local database.")
+        self._set_loading(False)
         self._show_info_dialog(
             "Memact",
             f"The local database failed to start. Details: {message}",
@@ -1184,6 +1250,17 @@ class MainWindow(QMainWindow):
         self.search_shell.style().unpolish(self.search_shell)
         self.search_shell.style().polish(self.search_shell)
         self.search_shell.update()
+
+    def _set_loading(self, active: bool) -> None:
+        if not hasattr(self, "loading_bar"):
+            return
+        if active:
+            self.loading_bar.setRange(0, 0)
+            self.loading_bar.show()
+        else:
+            self.loading_bar.setRange(0, 1)
+            self.loading_bar.setValue(0)
+            self.loading_bar.hide()
 
     def _handle_search_focus(self) -> None:
         self._set_search_active(True)
@@ -1377,6 +1454,8 @@ class MainWindow(QMainWindow):
         self.answer_card.setFixedWidth(answer_width)
         if hasattr(self, "results_separator"):
             self.results_separator.setFixedWidth(answer_width)
+        if hasattr(self, "loading_bar"):
+            self.loading_bar.setFixedWidth(answer_width)
 
         self.results_header_layout.setColumnMinimumWidth(0, left_width)
         self.results_header_layout.setColumnMinimumWidth(2, right_width)
@@ -1660,6 +1739,7 @@ class MainWindow(QMainWindow):
         self._set_preview_state(False)
         self.answer_card.hide()
         self.results_separator.hide()
+        self._set_loading(False)
         self._clear_evidence_cards()
         self.evidence_scroll.hide()
         self.answer_summary.clear()
@@ -1698,6 +1778,7 @@ class MainWindow(QMainWindow):
         self._set_preview_state(False)
         self.status_text.setText("Searching locally...")
         self.search_button.setEnabled(False)
+        self._set_loading(True)
         self.search_input.clearFocus()
         self._suggestion_timer.stop()
         self.suggestion_dock.hide()
@@ -1727,6 +1808,7 @@ class MainWindow(QMainWindow):
     def _handle_query_answer_ready(self, answer: QueryAnswer, request_id: int, query: str) -> None:
         if request_id != self._query_request_id:
             return
+        self._set_loading(False)
         self._set_results_mode(True)
         self.search_button.setEnabled(True)
         self._last_answer = answer

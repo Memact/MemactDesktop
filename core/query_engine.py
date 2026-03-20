@@ -205,6 +205,24 @@ def _domain(url: str | None) -> str | None:
     return None
 
 
+def _time_scope_suffix(time_scope: str | None) -> str:
+    if not time_scope:
+        return ""
+    lowered = time_scope.casefold()
+    if lowered.startswith(("today", "yesterday", "tonight", "this ", "last ")):
+        return f" {time_scope}"
+    return f" in {time_scope}"
+
+
+def _time_scope_lead(time_scope: str | None) -> str:
+    if not time_scope:
+        return ""
+    lowered = time_scope.casefold()
+    if lowered.startswith(("today", "yesterday", "tonight", "this ", "last ")):
+        return f"{time_scope[:1].upper()}{time_scope[1:]},"
+    return f"In {time_scope},"
+
+
 def _extract_domains(query: str) -> set[str]:
     if not query:
         return set()
@@ -1574,6 +1592,29 @@ def _flow_phrase(span: ActivitySpan) -> str:
     for prefix, replacement in mappings:
         if flow.startswith(prefix):
             return replacement + flow.removeprefix(prefix)
+    if flow:
+        lowered_flow = flow[:1].lower() + flow[1:]
+        verb_starts = (
+            "using ",
+            "working ",
+            "opened ",
+            "switched ",
+            "moved ",
+            "started ",
+            "browsing ",
+            "reading ",
+            "watching ",
+            "searching ",
+            "typing ",
+            "scrolling ",
+            "chatting ",
+            "messaging ",
+            "emailing ",
+            "coding ",
+            "organizing ",
+        )
+        if lowered_flow.startswith(verb_starts):
+            return lowered_flow
     return f"were in {flow.lower()}"
 
 
@@ -1584,8 +1625,9 @@ def _memory_summary(
     include_context: bool = True,
 ) -> str:
     pieces: list[str] = []
-    if time_scope:
-        pieces.append(f"In {time_scope},")
+    lead = _time_scope_lead(time_scope)
+    if lead:
+        pieces.append(lead)
     pieces.append(f"the strongest local moment suggests you {_flow_phrase(span)}")
     if include_context:
         hint = _moment_hint(span)
@@ -1616,7 +1658,7 @@ def _query_summary(spans: list[ActivitySpan], time_scope: str | None) -> str:
         labels = [_friendly_app_name(span.application) for span in spans[:3]]
     count_text = f"{len(spans)} strong local matches"
     if time_scope:
-        count_text = f"{count_text} in {time_scope}"
+        count_text = f"{count_text}{_time_scope_suffix(time_scope)}"
     if not labels:
         return count_text
     if len(labels) == 1:
@@ -1777,7 +1819,7 @@ def _graph_summary(
             topic_match = label
             break
 
-    scope = f"In {time_scope}, " if time_scope else ""
+    scope = f"{_time_scope_lead(time_scope)} " if time_scope else ""
     summary_parts: list[str] = []
     related_labels: list[str] = []
     if topic_match:
@@ -1839,7 +1881,7 @@ def _duration_summary(
     label: str | None,
     best_span: ActivitySpan | None,
 ) -> str:
-    scope = f" in {time_scope}" if time_scope else ""
+    scope = _time_scope_suffix(time_scope)
     if label:
         base = f"Based on local activity for {label}{scope}."
     else:
@@ -2168,7 +2210,7 @@ def answer_query(query: str) -> QueryAnswer:
             total_seconds = sum(span.duration_seconds for span in duration_spans)
         answer = _format_duration(total_seconds)
         if time_scope:
-            answer = f"{answer} in {time_scope}"
+            answer = f"{answer}{_time_scope_suffix(time_scope)}"
         label = None
         if target_domains:
             label = sorted(target_domains)[0]
@@ -2211,7 +2253,9 @@ def answer_query(query: str) -> QueryAnswer:
             if not category_spans:
                 summary = f"I did not find strong local activity that looks like {query_category}."
                 if time_scope:
-                    summary = f"In {time_scope}, {summary[0].lower()}{summary[1:]}"
+                    lead = _time_scope_lead(time_scope)
+                    if lead:
+                        summary = f"{lead} {summary[0].lower()}{summary[1:]}"
                 return QueryAnswer(
                     answer="I do not have clear evidence for that.",
                     summary=summary,
