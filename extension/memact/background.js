@@ -118,6 +118,58 @@ async function captureActiveTabContext(tab) {
             true
           );
         }
+        const normalizeVisibleText = (value) =>
+          String(value || "")
+            .replace(/\s+/g, " ")
+            .trim();
+        const pickContentText = () => {
+          const selectorGroups = [
+            "article",
+            "main",
+            "[role='main']",
+            "[role='article']",
+            "[role='document']",
+            "[role='feed']",
+            "[role='log']",
+            "[aria-live='polite']",
+            "[aria-live='assertive']",
+            "[data-testid*='conversation']",
+            "[data-testid*='message']",
+            "[data-testid*='messages']",
+            "[class*='conversation']",
+            "[class*='message-list']",
+            "[class*='messageList']",
+            "[class*='messages']",
+            "[class*='chat']",
+            "[class*='thread']"
+          ];
+          const seen = new Set();
+          const candidates = [];
+          for (const selector of selectorGroups) {
+            const nodes = document.querySelectorAll(selector);
+            for (const node of nodes) {
+              const text = normalizeVisibleText(node?.innerText || "");
+              if (!text) {
+                continue;
+              }
+              const key = text.slice(0, 600);
+              if (seen.has(key)) {
+                continue;
+              }
+              seen.add(key);
+              candidates.push(text);
+            }
+          }
+          candidates.sort((left, right) => right.length - left.length);
+          const bodyText = normalizeVisibleText(document.body?.innerText || "");
+          if (candidates.length && candidates[0].length >= 120) {
+            return candidates[0];
+          }
+          if (bodyText) {
+            return bodyText;
+          }
+          return candidates[0] || "";
+        };
         const readMeta = (key, attr = "name") => {
           const selector = `meta[${attr}="${key}"]`;
           const el = document.querySelector(selector);
@@ -129,21 +181,23 @@ async function captureActiveTabContext(tab) {
         const pageTitle = document.title || ogTitle || "";
         const h1 = document.querySelector("h1")?.innerText || "";
         const selection = window.getSelection()?.toString() || "";
-        const article = document.querySelector("article") || document.querySelector("main");
-        const rawSnippet = article?.innerText || document.body?.innerText || "";
-        const snippet = rawSnippet.replace(/\s+/g, " ").trim().slice(0, snippetMaxLen);
+        const pageContent = pickContentText();
+        const snippet = pageContent.slice(0, snippetMaxLen);
         let fullText = "";
-        if (article && canUseReadability && typeof Readability === "function") {
+        if (canUseReadability && typeof Readability === "function") {
           try {
             const clonedDocument = document.cloneNode(true);
             const articleData = new Readability(clonedDocument).parse();
-            const articleText = String(articleData?.textContent || "").replace(/\s+/g, " ").trim();
+            const articleText = normalizeVisibleText(articleData?.textContent || "");
             if (articleText) {
               fullText = articleText.slice(0, fullTextMaxLen);
             }
           } catch (error) {
             fullText = "";
           }
+        }
+        if (!fullText && pageContent) {
+          fullText = pageContent.slice(0, fullTextMaxLen);
         }
         const now = Date.now();
         const activeEl = document.activeElement;
