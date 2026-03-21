@@ -1,5 +1,7 @@
 const BRIDGE_URL = "http://127.0.0.1:38453/session";
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+const SNIPPET_MAX_LEN = 280;
+const FULL_TEXT_MAX_LEN = 8000;
 
 function detectBrowserKey() {
   const userAgent = navigator.userAgent || "";
@@ -64,6 +66,26 @@ function normalizeText(value, maxLen) {
   return text.length > maxLen ? `${text.slice(0, maxLen - 3)}...` : text;
 }
 
+function truncateText(value, maxLen) {
+  const text = String(value || "");
+  if (!text || !maxLen) {
+    return text;
+  }
+  return text.length > maxLen ? text.slice(0, maxLen) : text;
+}
+
+async function injectReadability(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["Readability.js"]
+    });
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
 async function captureActiveTabContext(tab) {
   if (!tab || !tab.id || !tab.url) {
     return null;
@@ -72,9 +94,11 @@ async function captureActiveTabContext(tab) {
     return null;
   }
   try {
+    const readabilityReady = await injectReadability(tab.id);
     const [injected] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: () => {
+      args: [SNIPPET_MAX_LEN, FULL_TEXT_MAX_LEN, readabilityReady],
+      func: (snippetMaxLen, fullTextMaxLen, canUseReadability) => {
         if (!window.__memactCaptureInstalled) {
           window.__memactCaptureInstalled = true;
           window.__memactLastInputAt = 0;
@@ -107,7 +131,20 @@ async function captureActiveTabContext(tab) {
         const selection = window.getSelection()?.toString() || "";
         const article = document.querySelector("article") || document.querySelector("main");
         const rawSnippet = article?.innerText || document.body?.innerText || "";
-        const snippet = rawSnippet.replace(/\s+/g, " ").trim().slice(0, 280);
+        const snippet = rawSnippet.replace(/\s+/g, " ").trim().slice(0, snippetMaxLen);
+        let fullText = "";
+        if (article && canUseReadability && typeof Readability === "function") {
+          try {
+            const clonedDocument = document.cloneNode(true);
+            const articleData = new Readability(clonedDocument).parse();
+            const articleText = String(articleData?.textContent || "").replace(/\s+/g, " ").trim();
+            if (articleText) {
+              fullText = articleText.slice(0, fullTextMaxLen);
+            }
+          } catch (error) {
+            fullText = "";
+          }
+        }
         const now = Date.now();
         const activeEl = document.activeElement;
         const activeTag = activeEl?.tagName || "";
@@ -125,6 +162,7 @@ async function captureActiveTabContext(tab) {
           h1,
           selection,
           snippet,
+          ...(fullText ? { fullText } : {}),
           activeTag,
           activeType,
           typingActive,
@@ -141,7 +179,10 @@ async function captureActiveTabContext(tab) {
       description: normalizeText(result.description, 200),
       h1: normalizeText(result.h1, 120),
       selection: normalizeText(result.selection, 200),
-      snippet: normalizeText(result.snippet, 280),
+      snippet: normalizeText(result.snippet, SNIPPET_MAX_LEN),
+      ...(result.fullText
+        ? { fullText: truncateText(normalizeText(result.fullText), FULL_TEXT_MAX_LEN) }
+        : {}),
       activeTag: normalizeText(result.activeTag, 40),
       activeType: normalizeText(result.activeType, 40),
       typingActive: Boolean(result.typingActive),

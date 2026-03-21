@@ -13,4 +13,4 @@ filters:
   - content_match
 priority: relevance
 ---
-When this skill activates, match the query terms against window titles and captured page text. Prioritize direct content matches over recency. Return the top 3 events with app name, window title, and timestamp, as a single sentence followed by supporting evidence.
+When this skill activates, the query likely describes something the user read or encountered - a concept, topic, or piece of information. Match against extracted keyphrases and full article text in the vector index. Prioritize semantic similarity over recency. Return the top 3 events with source title, keyphrases, and timestamp as a single sentence followed by supporting evidence.

@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+from core.keywords import extract_keyphrases, keyphrases_to_text
 from core.semantic import embed_text
 
 
@@ -28,6 +29,8 @@ class Event:
     exe_path: str | None
     tab_titles_json: str | None
     tab_urls_json: str | None
+    full_text: str | None
+    keyphrases_json: str | None
     searchable_text: str
     embedding_json: str
     source: str
@@ -62,6 +65,10 @@ class Event:
         if urls:
             return urls
         return [self.url] if self.url else []
+
+    @property
+    def keyphrases(self) -> list[str]:
+        return _decode_json_list(self.keyphrases_json)
 
 
 Anchor = Event
@@ -115,6 +122,8 @@ def _compose_searchable_text(
     window_title: str,
     url: str | None,
     content_text: str | None,
+    full_text: str | None = None,
+    keyphrases: list[str] | None = None,
     tab_titles: list[str] | None,
     tab_urls: list[str] | None,
 ) -> str:
@@ -122,12 +131,32 @@ def _compose_searchable_text(
         application or "",
         window_title or "",
         content_text or "",
+        full_text or "",
+        keyphrases_to_text(keyphrases or []),
         url or "",
         _domain_from_url(url) or "",
         " ".join(tab_titles or []),
         " ".join(tab_urls or []),
     ]
     return " ".join(part.strip() for part in parts if part and part.strip())
+
+
+def _event_column_names(connection: sqlite3.Connection) -> set[str]:
+    rows = connection.execute("PRAGMA table_info(events)").fetchall()
+    return {str(row["name"]).strip().lower() for row in rows}
+
+
+def _ensure_event_column(connection: sqlite3.Connection, definition: str) -> None:
+    name = definition.split()[0].strip().lower()
+    if name in _event_column_names(connection):
+        return
+    try:
+        connection.execute(f"ALTER TABLE events ADD COLUMN IF NOT EXISTS {definition}")
+        return
+    except sqlite3.OperationalError:
+        if name in _event_column_names(connection):
+            return
+    connection.execute(f"ALTER TABLE events ADD COLUMN {definition}")
 
 
 def _sync_event_fts(connection: sqlite3.Connection, event_id: int) -> None:
@@ -208,6 +237,8 @@ def _backfill_from_anchors(connection: sqlite3.Connection) -> None:
             window_title=row["window_title"],
             url=row["url"],
             content_text=row["content_text"],
+            full_text=None,
+            keyphrases=None,
             tab_titles=tab_titles,
             tab_urls=tab_urls,
         )
@@ -280,6 +311,8 @@ def init_db() -> None:
             ON events(application)
             """
         )
+        _ensure_event_column(connection, "full_text TEXT")
+        _ensure_event_column(connection, "keyphrases_json TEXT")
         connection.execute(
             """
             CREATE VIRTUAL TABLE IF NOT EXISTS events_fts
@@ -315,6 +348,7 @@ def append_event(
     url: str | None = None,
     interaction_type: str = "focus",
     content_text: str | None = None,
+    full_text: str | None = None,
     exe_path: str | None = None,
     tab_titles: list[str] | None = None,
     tab_urls: list[str] | None = None,
@@ -322,11 +356,16 @@ def append_event(
     source: str = "monitor",
 ) -> int:
     timestamp = occurred_at or datetime.now().isoformat(sep=" ", timespec="seconds")
+    normalized_full_text = str(full_text or "").strip() or None
+    keyphrases = extract_keyphrases(normalized_full_text) if normalized_full_text else []
+    keyphrases_json = _encode_json_list(keyphrases)
     searchable_text = _compose_searchable_text(
         application=application,
         window_title=window_title,
         url=url,
         content_text=content_text,
+        full_text=normalized_full_text,
+        keyphrases=keyphrases,
         tab_titles=tab_titles,
         tab_urls=tab_urls,
     )
@@ -343,13 +382,15 @@ def append_event(
                 url,
                 interaction_type,
                 content_text,
+                full_text,
                 exe_path,
                 tab_titles_json,
                 tab_urls_json,
+                keyphrases_json,
                 searchable_text,
                 embedding_json,
                 source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 timestamp,
@@ -358,9 +399,11 @@ def append_event(
                 url,
                 interaction_type,
                 content_text,
+                normalized_full_text,
                 exe_path,
                 tab_titles_json,
                 tab_urls_json,
+                keyphrases_json,
                 searchable_text,
                 embedding_json,
                 source,
@@ -383,6 +426,8 @@ def append_event(
             exe_path=exe_path,
             tab_titles_json=tab_titles_json,
             tab_urls_json=tab_urls_json,
+            full_text=normalized_full_text,
+            keyphrases_json=keyphrases_json,
             searchable_text=searchable_text,
             embedding_json=embedding_json,
             source=source,
@@ -411,6 +456,8 @@ def list_events_by_ids(ids: list[int]) -> list[Event]:
                 exe_path,
                 tab_titles_json,
                 tab_urls_json,
+                full_text,
+                keyphrases_json,
                 searchable_text,
                 embedding_json,
                 source
@@ -438,6 +485,8 @@ def list_recent_events(limit: int = 400) -> list[Event]:
                 exe_path,
                 tab_titles_json,
                 tab_urls_json,
+                full_text,
+                keyphrases_json,
                 searchable_text,
                 embedding_json,
                 source
@@ -480,6 +529,8 @@ def list_events_between(
                 exe_path,
                 tab_titles_json,
                 tab_urls_json,
+                full_text,
+                keyphrases_json,
                 searchable_text,
                 embedding_json,
                 source
@@ -508,6 +559,8 @@ def list_events_batch(*, offset: int = 0, limit: int = 1000) -> list[Event]:
                 exe_path,
                 tab_titles_json,
                 tab_urls_json,
+                full_text,
+                keyphrases_json,
                 searchable_text,
                 embedding_json,
                 source
@@ -540,6 +593,8 @@ def list_events_around(
                 exe_path,
                 tab_titles_json,
                 tab_urls_json,
+                full_text,
+                keyphrases_json,
                 searchable_text,
                 embedding_json,
                 source
@@ -563,6 +618,8 @@ def list_events_around(
                 exe_path,
                 tab_titles_json,
                 tab_urls_json,
+                full_text,
+                keyphrases_json,
                 searchable_text,
                 embedding_json,
                 source
@@ -613,6 +670,8 @@ def lexical_candidates(
                 e.exe_path,
                 e.tab_titles_json,
                 e.tab_urls_json,
+                e.full_text,
+                e.keyphrases_json,
                 e.searchable_text,
                 e.embedding_json,
                 e.source

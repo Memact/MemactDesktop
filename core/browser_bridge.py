@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 BRIDGE_HOST = "127.0.0.1"
 BRIDGE_PORT = 38453
 MAX_TABS = 64
+MAX_FULL_TEXT = 8000
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class BrowserSession:
     page_description: str | None
     page_h1: str | None
     page_snippet: str | None
+    full_text: str | None
     selection_text: str | None
     active_tag: str | None
     active_type: str | None
@@ -55,6 +57,9 @@ class BrowserStateStore:
         page_description = str(active_context.get("description", "")).strip() or None
         page_h1 = str(active_context.get("h1", "")).strip() or None
         page_snippet = str(active_context.get("snippet", "")).strip() or None
+        full_text = str(active_context.get("fullText", "")).strip() or None
+        if full_text is not None and len(full_text) > MAX_FULL_TEXT:
+            full_text = full_text[:MAX_FULL_TEXT]
         selection_text = str(active_context.get("selection", "")).strip() or None
         active_tag = str(active_context.get("activeTag", "")).strip() or None
         active_type = str(active_context.get("activeType", "")).strip() or None
@@ -90,6 +95,7 @@ class BrowserStateStore:
             page_description=page_description,
             page_h1=page_h1,
             page_snippet=page_snippet,
+            full_text=full_text,
             selection_text=selection_text,
             active_tag=active_tag,
             active_type=active_type,

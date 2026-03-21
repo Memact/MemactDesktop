@@ -79,6 +79,7 @@ class BrowserContext:
     page_description: str | None
     page_h1: str | None
     page_snippet: str | None
+    full_text: str | None
     selection_text: str | None
     active_tag: str | None
     active_type: str | None
@@ -256,6 +257,7 @@ def get_browser_context(hwnd: int, app_name: str, window_title: str) -> BrowserC
             page_description=None,
             page_h1=None,
             page_snippet=None,
+            full_text=None,
             selection_text=None,
             active_tag=None,
             active_type=None,
@@ -294,6 +296,7 @@ def get_browser_context(hwnd: int, app_name: str, window_title: str) -> BrowserC
             page_description=None,
             page_h1=None,
             page_snippet=None,
+            full_text=None,
             selection_text=None,
             active_tag=None,
             active_type=None,
@@ -310,6 +313,7 @@ def get_browser_context(hwnd: int, app_name: str, window_title: str) -> BrowserC
         page_description=None,
         page_h1=None,
         page_snippet=None,
+        full_text=None,
         selection_text=None,
         active_tag=None,
         active_type=None,
@@ -355,6 +359,7 @@ def _browser_context_from_extension(snapshot: WindowSnapshot, store: BrowserStat
         page_description=session.page_description,
         page_h1=session.page_h1,
         page_snippet=session.page_snippet,
+        full_text=session.full_text,
         selection_text=session.selection_text,
         active_tag=session.active_tag,
         active_type=session.active_type,
@@ -406,6 +411,7 @@ class WindowMonitor(threading.Thread):
             page_description=None,
             page_h1=None,
             page_snippet=None,
+            full_text=None,
             selection_text=None,
             active_tag=None,
             active_type=None,
@@ -428,6 +434,7 @@ class WindowMonitor(threading.Thread):
             url=browser_context.url,
             interaction_type=interaction_type,
             content_text=_compose_content_text(snapshot, browser_context),
+            full_text=browser_context.full_text,
             exe_path=snapshot.exe_path,
             tab_titles=browser_context.tab_titles,
             tab_urls=browser_context.tab_urls,

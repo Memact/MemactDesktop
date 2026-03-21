@@ -1952,6 +1952,19 @@ def answer_query(query: str) -> QueryAnswer:
     _start_background_warmup()
 
     meaning = extract_query_meaning(query)
+    skill = route_skill(query, get_skills())
+    if skill is not None and skill.name == "duration_query":
+        duration_answer = answer_duration_query(meaning)
+        return QueryAnswer(
+            answer=duration_answer,
+            summary="",
+            details_label="",
+            evidence=[],
+            time_scope_label=None,
+            result_count=0,
+            related_queries=[],
+        )
+
     base_query_text = meaning.embedding_text() or query
     query_vector = embed_text(base_query_text)
     intent_categories = _intent_category_candidates(query, query_vector)
@@ -1959,19 +1972,7 @@ def answer_query(query: str) -> QueryAnswer:
         expanded_text = f"{base_query_text} {' '.join(name for name, _ in intent_categories)}"
         query_vector = embed_text(expanded_text)
 
-    skills = get_skills()
-    active_skill = route_skill(query, skills)
-    if active_skill and active_skill.name == "duration_query":
-        duration_answer = answer_duration_query(meaning)
-        return QueryAnswer(
-            answer=duration_answer,
-            summary="",
-            details_label="",
-            evidence=[],
-            time_scope_label=meaning.time_text or "today",
-            result_count=0,
-            related_queries=[],
-        )
+    active_skill = skill
     skill_filters = _skill_filters(active_skill)
     skill_priority = active_skill.priority if active_skill else None
     skill_limit = _skill_result_limit(active_skill)

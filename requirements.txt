@@ -4,3 +4,4 @@ sentence-transformers>=3,<4
 PyYAML>=6,<7
 spacy>=3.7,<4
 chromadb>=0.5,<1
+yake>=0.4,<1
