@@ -15,6 +15,7 @@ class BrowserInstall:
     extensions_url: str
     supported: bool = True
     help_url: str | None = None
+    is_default: bool = False
 
 
 def _app_path_from_registry(exe_name: str) -> str | None:
@@ -103,10 +104,59 @@ def _extract_exe_path(command: str) -> str | None:
     return None
 
 
+def _default_browser_progid() -> str | None:
+    for key_path in (
+        r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
+        r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice",
+    ):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                value, _ = winreg.QueryValueEx(key, "ProgId")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        except OSError:
+            continue
+    return None
+
+
+def _command_for_progid(progid: str) -> str | None:
+    lookup_paths = (
+        (winreg.HKEY_CURRENT_USER, fr"Software\Classes\{progid}\shell\open\command"),
+        (winreg.HKEY_LOCAL_MACHINE, fr"SOFTWARE\Classes\{progid}\shell\open\command"),
+        (winreg.HKEY_CLASSES_ROOT, fr"{progid}\shell\open\command"),
+    )
+    for root, key_path in lookup_paths:
+        try:
+            with winreg.OpenKey(root, key_path) as key:
+                value, _ = winreg.QueryValueEx(key, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        except OSError:
+            continue
+    return None
+
+
+def _default_browser_key() -> str | None:
+    progid = _default_browser_progid()
+    if not progid:
+        return None
+    command = _command_for_progid(progid)
+    if not command:
+        return None
+    exe_path = _extract_exe_path(command)
+    if not exe_path:
+        return None
+    key_info = _browser_key_from_exe(exe_path)
+    if not key_info:
+        return None
+    return key_info[0]
+
+
 def detect_browsers() -> list[BrowserInstall]:
     local_app_data = Path(os.environ.get("LOCALAPPDATA", ""))
     program_files = Path(os.environ.get("PROGRAMFILES", ""))
     program_files_x86 = Path(os.environ.get("PROGRAMFILES(X86)", ""))
+    default_browser_key = _default_browser_key()
 
     detected: list[BrowserInstall] = []
     seen_paths: set[str] = set()
@@ -132,6 +182,7 @@ def detect_browsers() -> list[BrowserInstall]:
                     exe_path=exe_path,
                     extensions_url=extensions_url,
                     supported=supported,
+                    is_default=browser_key == default_browser_key,
                     help_url=(
                         "https://support.google.com/chrome_webstore/answer/2664769"
                         if supported
@@ -158,6 +209,7 @@ def detect_browsers() -> list[BrowserInstall]:
                 name="Google Chrome",
                 exe_path=chrome_path,
                 extensions_url="chrome://extensions/",
+                is_default=default_browser_key == "chrome",
                 help_url="https://support.google.com/chrome_webstore/answer/2664769",
             )
         )
@@ -180,10 +232,17 @@ def detect_browsers() -> list[BrowserInstall]:
                 name="Microsoft Edge",
                 exe_path=edge_path,
                 extensions_url="edge://extensions/",
+                is_default=default_browser_key == "edge",
                 help_url="https://learn.microsoft.com/microsoft-edge/extensions-chromium/getting-started/extension-sideloading",
             )
         )
 
+    detected.sort(
+        key=lambda browser: (
+            not browser.is_default,
+            browser.name.casefold(),
+        )
+    )
     return detected
 
 

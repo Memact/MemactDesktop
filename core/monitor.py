@@ -14,6 +14,7 @@ from pywinauto import Desktop
 
 from core.browser_bridge import BrowserStateStore
 from core.database import append_event
+from core.settings import load_excluded_apps
 
 
 user32 = ctypes.windll.user32
@@ -398,6 +399,7 @@ class WindowMonitor(threading.Thread):
         self.heartbeat_interval = heartbeat_interval
         self.browser_state_store = browser_state_store
         self._stop_event = threading.Event()
+        self._excluded_apps: set[str] = load_excluded_apps()
         self._last_fingerprint: tuple[str, ...] | None = None
         self._last_recorded_at = 0.0
         self._last_browser_probe_key: tuple[str, str] | None = None
@@ -426,6 +428,9 @@ class WindowMonitor(threading.Thread):
 
     def stop(self) -> None:
         self._stop_event.set()
+
+    def reload_excluded_apps(self) -> None:
+        self._excluded_apps = load_excluded_apps()
 
     def _emit_event(self, snapshot: WindowSnapshot, browser_context: BrowserContext, interaction_type: str) -> None:
         append_event(
@@ -479,6 +484,9 @@ class WindowMonitor(threading.Thread):
             try:
                 snapshot = get_active_window()
                 if snapshot is not None and should_capture_window(snapshot):
+                    if snapshot.app_name.lower() in self._excluded_apps:
+                        time.sleep(self.poll_interval)
+                        continue
                     browser_context = _browser_context_from_extension(snapshot, self.browser_state_store)
                     if browser_context is None:
                         probe_key = (snapshot.app_name.lower(), snapshot.title)

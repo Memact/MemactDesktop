@@ -19,6 +19,18 @@ from ui.fonts import body_font
 from ui.window_effects import apply_native_window_theme
 
 
+def _dialog_button_font(point_size: int = 12):
+    font = body_font(point_size)
+    font.setBold(True)
+    return font
+
+
+def _dialog_badge_font(point_size: int = 11):
+    font = body_font(point_size)
+    font.setBold(True)
+    return font
+
+
 class BrowserSetupDialog(QDialog):
     def __init__(
         self,
@@ -49,7 +61,7 @@ class BrowserSetupDialog(QDialog):
                 color: #ffffff;
             }
             QFrame#Panel {
-                background: rgba(255, 255, 255, 0.07);
+                background: rgba(255, 255, 255, 0.08);
                 border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 24px;
             }
@@ -68,8 +80,8 @@ class BrowserSetupDialog(QDialog):
                 font-size: 16px;
             }
             QFrame#StepCard {
-                background: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.14);
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 16px;
             }
             QLabel#StepIndex {
@@ -87,7 +99,7 @@ class BrowserSetupDialog(QDialog):
                 font-size: 15px;
             }
             QFrame#BrowserTile {
-                background: rgba(255, 255, 255, 0.05);
+                background: rgba(255, 255, 255, 0.08);
                 border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 18px;
             }
@@ -106,29 +118,29 @@ class BrowserSetupDialog(QDialog):
             QLabel#ReadyBadge {
                 color: #ffffff;
                 background: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.18);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 12px;
                 padding: 4px 10px;
-                font-size: 12px;
-                font-weight: 700;
             }
             QPushButton {
-                background: rgba(40, 74, 128, 0.08);
+                background: rgba(40, 74, 128, 0.14);
                 color: #ffffff;
-                border: 1px solid rgba(40, 74, 128, 0.16);
+                border: 1px solid rgba(88, 126, 188, 0.34);
                 border-radius: 14px;
                 padding: 10px 18px;
-                font-size: 14px;
             }
             QPushButton:hover {
-                background: rgba(40, 74, 128, 0.16);
+                background: rgba(40, 74, 128, 0.22);
+                border: 1px solid rgba(106, 150, 218, 0.4);
             }
             QPushButton#SecondaryButton {
-                background: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.16);
+                background: rgba(255, 255, 255, 0.06);
+                color: rgba(255, 255, 255, 0.9);
+                border: 1px solid rgba(255, 255, 255, 0.14);
             }
             QPushButton#SecondaryButton:hover {
-                background: rgba(255, 255, 255, 0.16);
+                background: rgba(255, 255, 255, 0.12);
+                border: 1px solid rgba(255, 255, 255, 0.16);
             }
             QScrollBar:vertical {
                 background: transparent;
@@ -200,10 +212,12 @@ class BrowserSetupDialog(QDialog):
         footer.setSpacing(10)
         help_button = QPushButton("Open browser help")
         help_button.setObjectName("SecondaryButton")
+        help_button.setFont(_dialog_button_font())
         help_button.setCursor(Qt.CursorShape.PointingHandCursor)
         help_button.clicked.connect(self._open_help_for_first_browser)
         later_button = QPushButton("Later")
         later_button.setObjectName("SecondaryButton")
+        later_button.setFont(_dialog_button_font())
         later_button.setCursor(Qt.CursorShape.PointingHandCursor)
         later_button.clicked.connect(self.accept)
         footer.addWidget(help_button)
@@ -253,13 +267,20 @@ class BrowserSetupDialog(QDialog):
         name.setObjectName("BrowserName")
         title_row.addWidget(name)
         status = self.browser_status(browser)
+        if browser.is_default:
+            default_badge = QLabel("Default")
+            default_badge.setObjectName("ReadyBadge")
+            default_badge.setFont(_dialog_badge_font())
+            title_row.addWidget(default_badge)
         if status == "ready":
             ready = QLabel("Ready")
             ready.setObjectName("ReadyBadge")
+            ready.setFont(_dialog_badge_font())
             title_row.addWidget(ready)
         elif status == "update":
             ready = QLabel("Update")
             ready.setObjectName("ReadyBadge")
+            ready.setFont(_dialog_badge_font())
             title_row.addWidget(ready)
         title_row.addStretch(1)
 
@@ -286,6 +307,7 @@ class BrowserSetupDialog(QDialog):
 
         setup_label = "Update" if status == "update" else "Open setup"
         setup_button = QPushButton(setup_label)
+        setup_button.setFont(_dialog_button_font())
         setup_button.setEnabled(browser.supported)
         setup_button.setCursor(Qt.CursorShape.PointingHandCursor)
         setup_button.clicked.connect(

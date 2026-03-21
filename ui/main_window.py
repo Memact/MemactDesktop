@@ -304,6 +304,34 @@ class EvidenceCard(QFrame):
             chip_row.addWidget(chip)
         chip_row.addStretch(1)
 
+        all_phrases: list[str] = []
+        seen_phrases: set[str] = set()
+        for event in span.events:
+            for phrase in getattr(event, "keyphrases", []):
+                phrase_text = str(phrase).strip()
+                if not phrase_text:
+                    continue
+                key = phrase_text.casefold()
+                if key in seen_phrases:
+                    continue
+                all_phrases.append(phrase_text)
+                seen_phrases.add(key)
+                if len(all_phrases) >= 5:
+                    break
+            if len(all_phrases) >= 5:
+                break
+
+        keyphrase_row = None
+        if all_phrases:
+            keyphrase_row = QHBoxLayout()
+            keyphrase_row.setContentsMargins(0, 0, 0, 0)
+            keyphrase_row.setSpacing(8)
+            for phrase in all_phrases:
+                label = QLabel(f"#{phrase}")
+                label.setObjectName("EvidenceKeyphrase")
+                keyphrase_row.addWidget(label)
+            keyphrase_row.addStretch(1)
+
         meta = QLabel(
             f"{span.start_at.strftime('%b %d')}  |  {span.start_at.strftime('%I:%M %p').lstrip('0')} to {span.end_at.strftime('%I:%M %p').lstrip('0')}  |  {app_label}"
         )
@@ -355,6 +383,8 @@ class EvidenceCard(QFrame):
 
         layout.addWidget(title)
         layout.addLayout(chip_row)
+        if keyphrase_row is not None:
+            layout.addLayout(keyphrase_row)
         layout.addWidget(meta)
         if link_button is not None:
             layout.addWidget(link_button, 0, Qt.AlignmentFlag.AlignLeft)
@@ -382,7 +412,7 @@ class GlassInfoDialog(QDialog):
             }
             QFrame#DialogPanel {
                 background: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.18);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 24px;
             }
             QLabel#DialogTitle {
@@ -395,7 +425,7 @@ class GlassInfoDialog(QDialog):
             }
             QFrame#InfoOrb {
                 background: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.18);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 28px;
             }
             QLabel#InfoGlyph {
@@ -404,16 +434,18 @@ class GlassInfoDialog(QDialog):
                 font-weight: 600;
             }
             QPushButton {
-                background: rgba(40, 74, 128, 0.08);
+                background: rgba(40, 74, 128, 0.14);
                 color: #ffffff;
-                border: 1px solid rgba(40, 74, 128, 0.16);
+                border: 1px solid rgba(88, 126, 188, 0.34);
                 border-radius: 14px;
                 padding: 10px 18px;
                 min-width: 110px;
                 font-size: 15px;
+                font-weight: 700;
             }
             QPushButton:hover {
-                background: rgba(40, 74, 128, 0.16);
+                background: rgba(40, 74, 128, 0.22);
+                border: 1px solid rgba(106, 150, 218, 0.4);
             }
             """
         )
@@ -490,7 +522,7 @@ class SearchHistoryDialog(QDialog):
             }
             QFrame#DialogPanel {
                 background: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.18);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 24px;
             }
             QLabel#DialogTitle {
@@ -512,13 +544,13 @@ class SearchHistoryDialog(QDialog):
                 background: transparent;
             }
             QFrame#HistoryRow {
-                background: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.12);
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 14px;
             }
             QFrame#HistoryRow[hovered="true"] {
-                background: rgba(255, 255, 255, 0.1);
-                border: 1px solid rgba(255, 255, 255, 0.18);
+                background: rgba(255, 255, 255, 0.16);
+                border: 1px solid rgba(255, 255, 255, 0.16);
             }
             QLabel#HistoryQuery {
                 color: #ffffff;
@@ -536,6 +568,7 @@ class SearchHistoryDialog(QDialog):
                 min-width: 28px;
                 min-height: 28px;
                 padding: 0;
+                font-family: "IBM Plex Sans";
                 font-size: 14px;
                 font-weight: 600;
             }
@@ -543,24 +576,30 @@ class SearchHistoryDialog(QDialog):
                 background: rgba(255, 255, 255, 0.16);
             }
             QPushButton#ClearButton {
-                background: rgba(255, 255, 255, 0.08);
-                color: #ffffff;
-                border: 1px solid rgba(255, 255, 255, 0.16);
+                background: rgba(255, 255, 255, 0.06);
+                color: rgba(255, 255, 255, 0.9);
+                border: 1px solid rgba(255, 255, 255, 0.14);
                 border-radius: 12px;
                 padding: 8px 14px;
+                font-family: "IBM Plex Sans";
+                font-weight: 700;
             }
             QPushButton#ClearButton:hover {
-                background: rgba(255, 255, 255, 0.16);
+                background: rgba(255, 255, 255, 0.12);
+                border: 1px solid rgba(255, 255, 255, 0.16);
             }
             QPushButton#CloseButton {
-                background: rgba(40, 74, 128, 0.08);
+                background: rgba(40, 74, 128, 0.14);
                 color: #ffffff;
-                border: 1px solid rgba(40, 74, 128, 0.16);
+                border: 1px solid rgba(88, 126, 188, 0.34);
                 border-radius: 12px;
                 padding: 8px 14px;
+                font-family: "IBM Plex Sans";
+                font-weight: 700;
             }
             QPushButton#CloseButton:hover {
-                background: rgba(40, 74, 128, 0.16);
+                background: rgba(40, 74, 128, 0.22);
+                border: 1px solid rgba(106, 150, 218, 0.4);
             }
             """
         )
@@ -576,8 +615,10 @@ class SearchHistoryDialog(QDialog):
 
         title = QLabel("Search history")
         title.setObjectName("DialogTitle")
+        title.setFont(body_font(18))
         subtitle = QLabel("Your recent searches are stored locally on this device.")
         subtitle.setObjectName("DialogBody")
+        subtitle.setFont(body_font(12))
         subtitle.setWordWrap(True)
 
         panel_layout.addWidget(title)
@@ -602,10 +643,12 @@ class SearchHistoryDialog(QDialog):
         actions.addStretch(1)
         clear_button = QPushButton("Clear history")
         clear_button.setObjectName("ClearButton")
+        clear_button.setFont(body_font(12))
         clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
         clear_button.clicked.connect(self._clear_history)
         close_button = QPushButton("Close")
         close_button.setObjectName("CloseButton")
+        close_button.setFont(body_font(12))
         close_button.setCursor(Qt.CursorShape.PointingHandCursor)
         close_button.clicked.connect(self.accept)
         actions.addWidget(clear_button)
@@ -643,6 +686,7 @@ class SearchHistoryDialog(QDialog):
         if not self._history:
             empty = QLabel("No searches yet.")
             empty.setObjectName("DialogBody")
+            empty.setFont(body_font(12))
             self._content_layout.addWidget(empty)
             self._content_layout.addStretch(1)
             return
@@ -669,15 +713,18 @@ class SearchHistoryDialog(QDialog):
             text_col.setSpacing(6)
             query_label = QLabel(query)
             query_label.setObjectName("HistoryQuery")
+            query_label.setFont(body_font(12))
             query_label.setWordWrap(True)
             time_label = QLabel(readable)
             time_label.setObjectName("HistoryTime")
+            time_label.setFont(body_font(10))
             text_col.addWidget(query_label)
             text_col.addWidget(time_label)
             row_layout.addLayout(text_col, 1)
 
             delete_button = QPushButton("×")
             delete_button.setObjectName("HistoryDeleteButton")
+            delete_button.setFont(body_font(11))
             delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
             delete_button.clicked.connect(lambda _checked=False, value=query: self._delete_query(value))
             row_layout.addWidget(delete_button, 0, Qt.AlignmentFlag.AlignTop)
@@ -734,6 +781,7 @@ class MainWindow(QMainWindow):
         self._visible_suggestion_cards: list[SuggestionCard] = []
         self._typed_query_before_selection = ""
         self._cached_empty_suggestions: list[SearchSuggestion] | None = None
+        self._active_time_filter: str | None = None
         self._results_mode = False
 
         self._suggestion_timer = QTimer(self)
@@ -776,7 +824,7 @@ class MainWindow(QMainWindow):
             }
             QFrame#MenuOrb {
                 background: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.14);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 24px;
             }
             QPushButton#MenuButton {
@@ -856,7 +904,7 @@ class MainWindow(QMainWindow):
             }
             QFrame#SuggestionDock {
                 background: rgba(0, 1, 27, 0.975);
-                border: 1px solid rgba(255, 255, 255, 0.14);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-top: none;
                 border-top-left-radius: 0px;
                 border-top-right-radius: 0px;
@@ -902,13 +950,37 @@ class MainWindow(QMainWindow):
                 font-weight: 700;
                 letter-spacing: 1px;
             }
+            QPushButton#TimeFilterChip {
+                background: rgba(255, 255, 255, 0.08);
+                color: rgba(255, 255, 255, 0.78);
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 16px;
+                padding: 5px 14px;
+                min-height: 28px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton#TimeFilterChip[active="true"] {
+                background: rgba(40, 74, 128, 0.08);
+                color: #ffffff;
+                border: 1px solid rgba(40, 74, 128, 0.16);
+            }
+            QPushButton#TimeFilterChip:hover {
+                background: rgba(255, 255, 255, 0.16);
+                border: 1px solid rgba(255, 255, 255, 0.16);
+            }
+            QPushButton#TimeFilterChip[active="true"]:hover {
+                background: rgba(40, 74, 128, 0.16);
+                border: 1px solid rgba(40, 74, 128, 0.16);
+            }
             QFrame#SuggestionCard {
-                background: rgba(255, 255, 255, 0.035);
-                border: none;
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 14px;
             }
             QFrame#SuggestionCard[hovered="true"], QFrame#SuggestionCard[active="true"] {
-                background: rgba(255, 255, 255, 0.11);
+                background: rgba(255, 255, 255, 0.10);
+                border: 1px solid rgba(255, 255, 255, 0.16);
             }
             QLabel#SuggestionMeta {
                 color: rgba(255, 255, 255, 0.42);
@@ -926,13 +998,13 @@ class MainWindow(QMainWindow):
                 font-size: 12px;
             }
             QFrame#SearchShell {
-                background: rgba(255, 255, 255, 0.11);
-                border: 1px solid rgba(255, 255, 255, 0.14);
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 26px;
             }
             QFrame#SearchShell[active="true"] {
-                background: rgba(255, 255, 255, 0.14);
-                border: 1px solid rgba(40, 74, 128, 0.45);
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(40, 74, 128, 0.16);
             }
             QFrame#SearchShell[attached="true"] {
                 border-bottom: none;
@@ -941,8 +1013,8 @@ class MainWindow(QMainWindow):
                 border-bottom-right-radius: 0px;
             }
             QFrame#AnswerCard {
-                background: rgba(255, 255, 255, 0.11);
-                border: 1px solid rgba(255, 255, 255, 0.14);
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 28px;
             }
             QLabel#AnswerEyebrow {
@@ -980,7 +1052,7 @@ class MainWindow(QMainWindow):
                 background: transparent;
             }
             QFrame#EvidenceCard {
-                background: rgba(255, 255, 255, 0.085);
+                background: rgba(255, 255, 255, 0.08);
                 border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 18px;
             }
@@ -998,22 +1070,28 @@ class MainWindow(QMainWindow):
                 font-size: 11px;
                 font-weight: 600;
             }
+            QLabel#EvidenceKeyphrase {
+                color: rgba(255, 255, 255, 0.38);
+                font-size: 11px;
+                font-style: italic;
+            }
             QLabel#EvidenceMeta {
                 color: rgba(170, 194, 230, 0.92);
                 font-size: 12px;
                 font-weight: 600;
             }
             QPushButton#EvidenceLinkButton {
-                background: rgba(40, 74, 128, 0.08);
+                background: rgba(40, 74, 128, 0.14);
                 color: #ffffff;
-                border: 1px solid rgba(40, 74, 128, 0.16);
+                border: 1px solid rgba(88, 126, 188, 0.34);
                 border-radius: 12px;
                 padding: 6px 12px;
                 font-size: 12px;
-                font-weight: 600;
+                font-weight: 700;
             }
             QPushButton#EvidenceLinkButton:hover {
-                background: rgba(40, 74, 128, 0.16);
+                background: rgba(40, 74, 128, 0.22);
+                border: 1px solid rgba(106, 150, 218, 0.4);
             }
             QLabel#EvidenceAttention {
                 color: rgba(255, 255, 255, 0.76);
@@ -1055,16 +1133,17 @@ class MainWindow(QMainWindow):
                 letter-spacing: 1px;
             }
             QPushButton#RefineButton {
-                background: rgba(255, 255, 255, 0.08);
-                color: #ffffff;
-                border: 1px solid rgba(255, 255, 255, 0.16);
+                background: rgba(255, 255, 255, 0.06);
+                color: rgba(255, 255, 255, 0.9);
+                border: 1px solid rgba(255, 255, 255, 0.14);
                 border-radius: 14px;
                 padding: 10px 14px;
                 font-size: 13px;
                 text-align: left;
+                font-weight: 600;
             }
             QPushButton#RefineButton:hover {
-                background: rgba(255, 255, 255, 0.16);
+                background: rgba(255, 255, 255, 0.12);
                 border: 1px solid rgba(255, 255, 255, 0.16);
             }
             QLabel#StatusText {
@@ -1310,6 +1389,23 @@ class MainWindow(QMainWindow):
         self.suggestion_heading.setObjectName("SuggestionHeading")
         self.suggestion_heading.hide()
         dock_layout.addWidget(self.suggestion_heading)
+        self.time_chip_row = QFrame()
+        self.time_chip_row.setObjectName("TimeChipRow")
+        self.time_chip_row.hide()
+        self._time_chip_buttons: dict[str, QPushButton] = {}
+        time_chip_layout = QHBoxLayout(self.time_chip_row)
+        time_chip_layout.setContentsMargins(0, 0, 0, 6)
+        time_chip_layout.setSpacing(8)
+        for phrase in ("Today", "Yesterday", "This week", "Last week"):
+            chip = QPushButton(phrase)
+            chip.setObjectName("TimeFilterChip")
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            phrase_value = phrase.lower()
+            chip.clicked.connect(lambda _checked=False, value=phrase_value: self._apply_time_chip(value))
+            time_chip_layout.addWidget(chip, 0, Qt.AlignmentFlag.AlignLeft)
+            self._time_chip_buttons[phrase_value] = chip
+        time_chip_layout.addStretch(1)
+        dock_layout.addWidget(self.time_chip_row)
         self.suggestion_scroll = QScrollArea()
         self.suggestion_scroll.setObjectName("SuggestionScroll")
         self.suggestion_scroll.setWidgetResizable(True)
@@ -1426,7 +1522,7 @@ class MainWindow(QMainWindow):
             self.tray = None
             return
         self.tray = QSystemTrayIcon(app_icon(64), self)
-        self.tray.setToolTip("Memact is privately recording local actions")
+        self.tray.setToolTip("Memact is privately recording local activity")
         tray_menu = QMenu(self)
         tray_menu.setFont(body_font(12))
         tray_menu.setStyleSheet(self._menu_stylesheet())
@@ -1453,10 +1549,10 @@ class MainWindow(QMainWindow):
         self._enable_menu_cursor(self.overflow_menu)
         install_action = self.overflow_menu.addAction("Install Browser Extension")
         install_action.triggered.connect(self._open_browser_setup_from_menu)
-        privacy_action = self.overflow_menu.addAction("Privacy Notice")
-        privacy_action.triggered.connect(self._show_privacy_dialog)
         history_action = self.overflow_menu.addAction("Search History")
         history_action.triggered.connect(self._show_search_history)
+        privacy_action = self.overflow_menu.addAction("Privacy Notice")
+        privacy_action.triggered.connect(self._show_privacy_dialog)
         self.overflow_menu.addSeparator()
         self._add_quit_action(self.overflow_menu)
 
@@ -1482,7 +1578,7 @@ class MainWindow(QMainWindow):
         if self._db_ready:
             return
         self._db_ready = True
-        self.status_text.setText("Ready. Ask anything about your past actions.")
+        self.status_text.setText("Ready. Ask about your past activity.")
         QTimer.singleShot(150, self._start_background_services)
         QTimer.singleShot(900, self._maybe_show_browser_setup)
 
@@ -1580,15 +1676,38 @@ class MainWindow(QMainWindow):
 
     def _handle_search_focus(self) -> None:
         self._set_search_active(True)
+        self._update_time_chip_state()
+        if self._should_show_time_chips() and self._cached_empty_suggestions is None:
+            self._render_suggestions([], heading="SUGGESTIONS")
         self._refresh_suggestions_immediately()
         self._update_search_button()
+
+    def _should_show_time_chips(self) -> bool:
+        return self.search_input.hasFocus() and not self.search_input.text().strip()
+
+    def _update_time_chip_visibility(self) -> bool:
+        visible = self._should_show_time_chips()
+        if hasattr(self, "time_chip_row"):
+            self.time_chip_row.setVisible(visible)
+        return visible
+
+    def _update_time_chip_state(self) -> None:
+        if not hasattr(self, "_time_chip_buttons"):
+            return
+        active = (self._active_time_filter or "").casefold()
+        for phrase, chip in self._time_chip_buttons.items():
+            is_active = phrase.casefold() == active
+            chip.setProperty("active", is_active)
+            chip.style().unpolish(chip)
+            chip.style().polish(chip)
+            chip.update()
 
     def _kickoff_suggestion_refresh(self) -> None:
         if not self._db_ready or not self.search_input.hasFocus():
             return
         text = self.search_input.text().strip()
-        heading = "AUTOCOMPLETE" if text else "RECENT PROMPTS"
-        if not text and self._cached_empty_suggestions is not None:
+        heading = "SUGGESTIONS"
+        if not text and self._active_time_filter is None and self._cached_empty_suggestions is not None:
             self._render_suggestions(self._cached_empty_suggestions, heading=heading)
             return
         self.suggestion_heading.setText(heading)
@@ -1603,7 +1722,11 @@ class MainWindow(QMainWindow):
 
     def _suggestion_worker(self, request_id: int, text: str, heading: str) -> None:
         try:
-            suggestions = autocomplete_suggestions(text, limit=5) if text else dynamic_suggestions(limit=4)
+            suggestions = (
+                autocomplete_suggestions(text, limit=5)
+                if text
+                else dynamic_suggestions(limit=4, time_filter=self._active_time_filter)
+            )
         except Exception:
             logger.exception("Suggestion worker failed")
             suggestions = []
@@ -1622,7 +1745,7 @@ class MainWindow(QMainWindow):
             return
         if self.search_input.text().strip() != text:
             return
-        if not text:
+        if not text and self._active_time_filter is None:
             self._cached_empty_suggestions = suggestions
         self._render_suggestions(suggestions, heading=heading)
 
@@ -1712,8 +1835,10 @@ class MainWindow(QMainWindow):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+        chips_visible = self._update_time_chip_visibility()
+        show_heading = bool(heading) and bool(suggestions) and not chips_visible
         self.suggestion_heading.setText(heading)
-        self.suggestion_heading.setVisible(bool(heading))
+        self.suggestion_heading.setVisible(show_heading)
         for suggestion in suggestions:
             card = SuggestionCard(suggestion)
             card.setMinimumHeight(self._suggestion_row_height)
@@ -1725,27 +1850,45 @@ class MainWindow(QMainWindow):
             self.suggestions_layout.addWidget(card)
             self._visible_suggestion_cards.append(card)
         visible_rows = min(len(suggestions), self._suggestion_visible_limit)
-        scroll_height = 0
+        heading_height = self.suggestion_heading.sizeHint().height() if self.suggestion_heading.isVisible() else 0
+        chip_height = self.time_chip_row.sizeHint().height() if chips_visible else 0
+        _, top_margin, _, bottom_margin = self.suggestion_dock.layout().getContentsMargins()
+        desired_scroll_height = 0
         if visible_rows:
-            scroll_height = (
+            desired_scroll_height = (
                 visible_rows * self._suggestion_row_height
                 + max(visible_rows - 1, 0) * self.suggestions_layout.spacing()
             )
+        anchor_pos = self.search_shell.mapTo(self.root, QPoint(0, 0))
+        available_below = max(
+            self.root.height() - (anchor_pos.y() + self.search_shell.height()) - 20,
+            self._suggestion_row_height if suggestions else 0,
+        )
+        max_scroll_height = max(
+            0,
+            available_below
+            - top_margin
+            - bottom_margin
+            - (heading_height + self.suggestion_dock.layout().spacing() if heading_height else 0)
+            - (chip_height + self.suggestion_dock.layout().spacing() if chip_height else 0),
+        )
+        scroll_height = min(desired_scroll_height, max_scroll_height)
         self.suggestion_scroll.setFixedHeight(scroll_height)
-        heading_height = self.suggestion_heading.sizeHint().height() if self.suggestion_heading.isVisible() else 0
-        _, top_margin, _, bottom_margin = self.suggestion_dock.layout().getContentsMargins()
         dock_height = top_margin + bottom_margin + scroll_height
         if heading_height:
             dock_height += heading_height + self.suggestion_dock.layout().spacing()
+        if chip_height:
+            dock_height += chip_height + self.suggestion_dock.layout().spacing()
         self.suggestion_dock.setFixedHeight(max(dock_height, 0))
         dock_width = self.search_shell.width()
         if dock_width:
             self.suggestion_dock.setMinimumWidth(dock_width)
             self.suggestion_dock.setMaximumWidth(dock_width)
             self.suggestion_dock.setFixedWidth(dock_width)
-        self._set_hero_shifted(bool(suggestions))
-        self.suggestion_dock.setVisible(bool(suggestions))
-        self._set_search_attached(bool(suggestions))
+        dock_visible = bool(suggestions) or chips_visible
+        self._set_hero_shifted(dock_visible)
+        self.suggestion_dock.setVisible(dock_visible)
+        self._set_search_attached(dock_visible)
         QTimer.singleShot(0, self._reveal_suggestion_dock)
         self._sync_back_button()
 
@@ -1989,6 +2132,7 @@ class MainWindow(QMainWindow):
 
     def _dismiss_suggestions(self) -> None:
         self.suggestion_dock.hide()
+        self._update_time_chip_visibility()
         self._set_search_attached(False)
         self.search_input.setProperty("suggestionSelected", False)
         if self._selected_suggestion_index >= 0:
@@ -2012,6 +2156,14 @@ class MainWindow(QMainWindow):
         self._update_search_button()
         self._submit_query()
 
+    def _apply_time_chip(self, phrase: str) -> None:
+        next_filter = None if (self._active_time_filter or "").casefold() == phrase.casefold() else phrase
+        self._active_time_filter = next_filter
+        self._cached_empty_suggestions = None
+        self._update_time_chip_state()
+        self.search_input.setFocus(Qt.FocusReason.OtherFocusReason)
+        self._refresh_suggestions_immediately()
+
     def _schedule_suggestion_hide(self) -> None:
         QTimer.singleShot(140, self._hide_suggestions_if_idle)
 
@@ -2024,6 +2176,7 @@ class MainWindow(QMainWindow):
         if isinstance(focused, SuggestionCard):
             return
         self.suggestion_dock.hide()
+        self._update_time_chip_visibility()
         self._set_search_attached(False)
         self.search_input.setProperty("suggestionSelected", False)
         self._selected_suggestion_index = -1
@@ -2076,10 +2229,14 @@ class MainWindow(QMainWindow):
                 card.style().polish(card)
         if not bool(self.search_input.property("suggestionSelected")):
             self._typed_query_before_selection = text
+        if text.strip() and self._active_time_filter is not None:
+            self._active_time_filter = None
+            self._update_time_chip_state()
         self.search_input.setProperty("empty", not bool(text))
         self.search_input.style().unpolish(self.search_input)
         self.search_input.style().polish(self.search_input)
         self.search_input.update()
+        self._update_time_chip_visibility()
         self._update_search_button()
         self._sync_back_button()
         if text.strip():
@@ -2091,6 +2248,8 @@ class MainWindow(QMainWindow):
         else:
             if self.search_input.hasFocus():
                 self._set_search_active(True)
+                if self._cached_empty_suggestions is None:
+                    self._render_suggestions([], heading="SUGGESTIONS")
                 self._refresh_suggestions_immediately()
             else:
                 self.suggestion_dock.hide()
@@ -2122,8 +2281,11 @@ class MainWindow(QMainWindow):
         self.search_button.setEnabled(True)
         if clear_query:
             self._typed_query_before_selection = ""
+            self._active_time_filter = None
+            self._update_time_chip_state()
             self.search_input.clear()
             self.search_input.clearFocus()
+            self._update_time_chip_visibility()
             self._update_search_button()
         else:
             if self.search_input.text():
@@ -2131,7 +2293,7 @@ class MainWindow(QMainWindow):
         self._set_search_active(False)
         self._set_hero_shifted(False)
         if self._db_ready:
-            self.status_text.setText("Ready. Ask anything about your past actions.")
+            self.status_text.setText("Ready. Ask about your past activity.")
         else:
             self.status_text.setText("Starting your local memory engine...")
         self._sync_back_button()
@@ -2157,6 +2319,7 @@ class MainWindow(QMainWindow):
         self.search_input.clearFocus()
         self._suggestion_timer.stop()
         self.suggestion_dock.hide()
+        self._update_time_chip_visibility()
         self._set_search_attached(False)
         threading.Thread(
             target=self._query_worker,

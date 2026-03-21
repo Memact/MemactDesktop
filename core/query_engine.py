@@ -23,7 +23,7 @@ from core.meaning_extractor import extract_query_meaning, warmup_spacy
 from core.semantic import cosine_similarity, embed_text, tokenize
 from core.skill_loader import Skill, get_skills
 from core.skill_router import route_skill
-from core.duration import answer_duration_query
+from core.duration import answer_duration_query, resolve_time_range
 from core.vector_store import ensure_seeded, is_available as chroma_available, query_event_ids, upsert_events
 
 
@@ -606,12 +606,59 @@ def _meaningful_tokens(text: str) -> list[str]:
 
 
 def _normalize_suggestion_topic(value: str | None, *, max_len: int = 56) -> str | None:
-    text = re.sub(r"\s+", " ", str(value or "")).strip(" -|:.,!?")
+    text = _normalize_label(str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip(" -|:.,!?")
     if len(text) < 4:
         return None
     if re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", text.casefold()):
         return None
+    tokens = tokenize(text)
+    unique_tokens = []
+    seen: set[str] = set()
+    for token in tokens:
+        key = token.casefold()
+        if key in seen:
+            continue
+        unique_tokens.append(token)
+        seen.add(key)
+    if unique_tokens:
+        text = " ".join(unique_tokens)
     return text[:max_len].strip()
+
+
+def _topic_matches_context(topic: str, event: Event) -> bool:
+    topic_tokens = {token for token in _meaningful_tokens(topic) if len(token) >= 3}
+    if not topic_tokens:
+        return True
+    context_values = [
+        _friendly_app_name(event.application),
+        _event_label(event),
+        _domain(event.url) or "",
+    ]
+    for value in context_values:
+        context_tokens = {token for token in _meaningful_tokens(value) if len(token) >= 3}
+        if context_tokens and topic_tokens <= context_tokens:
+            return True
+    return False
+
+
+def _recall_source_text(event: Event) -> str | None:
+    if event.full_text:
+        segments = re.split(r"[.!?]\s+|\n+", event.full_text)
+        for segment in segments:
+            cleaned = re.sub(r"\s+", " ", segment).strip()
+            if len(cleaned) >= 40:
+                return cleaned
+    return None
+
+
+def _is_recall_rich_event(event: Event) -> bool:
+    if event.keyphrases:
+        return True
+    source_text = _recall_source_text(event)
+    if not source_text:
+        return False
+    return len(_meaningful_tokens(source_text)) >= 8
 
 
 def _event_suggestion_topics(event: Event) -> list[str]:
@@ -621,6 +668,8 @@ def _event_suggestion_topics(event: Event) -> list[str]:
         normalized = _normalize_suggestion_topic(phrase)
         if not normalized:
             continue
+        if _topic_matches_context(normalized, event):
+            continue
         key = normalized.casefold()
         if key in seen:
             continue
@@ -628,28 +677,222 @@ def _event_suggestion_topics(event: Event) -> list[str]:
         seen.add(key)
         if len(topics) >= 3:
             return topics
-    source_text = (event.content_text or event.window_title or "").strip()
+    source_text = _recall_source_text(event)
+    if not source_text:
+        return topics
     tokens = [token for token in _meaningful_tokens(source_text) if len(token) >= 4]
-    for size in (3, 2, 1):
-        if len(tokens) < size:
+    for start in range(0, min(len(tokens), 8)):
+        for size in (3, 2, 1):
+            if start + size > len(tokens):
+                continue
+            normalized = _normalize_suggestion_topic(" ".join(tokens[start : start + size]))
+            if not normalized:
+                continue
+            if _topic_matches_context(normalized, event):
+                continue
+            key = normalized.casefold()
+            if key in seen:
+                continue
+            topics.append(normalized)
+            seen.add(key)
+            if len(topics) >= 3:
+                return topics
+    return topics
+
+
+def _content_topic_for_span(span: ActivitySpan) -> str | None:
+    seen: set[str] = set()
+    for event in span.events:
+        for topic in _event_suggestion_topics(event):
+            key = topic.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            return topic
+    return None
+
+
+def _top_content_topics(spans: list[ActivitySpan], limit: int = 3) -> list[str]:
+    topic_scores: Counter[str] = Counter()
+    original_case: dict[str, str] = {}
+    for span in spans:
+        topic = _content_topic_for_span(span)
+        if not topic:
             continue
-        normalized = _normalize_suggestion_topic(" ".join(tokens[:size]))
-        if not normalized:
-            continue
-        key = normalized.casefold()
+        key = topic.casefold()
+        original_case.setdefault(key, topic)
+        topic_scores[key] += max(span.duration_seconds, 30)
+    return [original_case[key] for key, _ in topic_scores.most_common(limit)]
+
+
+def _content_query_overlap_score(span: ActivitySpan, query: str) -> float:
+    query_tokens = [token for token in _meaningful_tokens(query) if len(token) >= 4]
+    if not query_tokens:
+        return span.relevance
+
+    normalized_query = " ".join(query_tokens)
+    best_overlap = 0
+    best_keyphrase_overlap = 0
+    phrase_match = False
+
+    for event in span.events:
+        text_candidates = [
+            (event.window_title or "").strip(),
+            (event.content_text or "").strip(),
+            (event.full_text or "")[:1600].strip(),
+        ]
+        for phrase in event.keyphrases:
+            phrase_text = str(phrase).strip()
+            if not phrase_text:
+                continue
+            phrase_tokens = set(tokenize(phrase_text))
+            best_keyphrase_overlap = max(
+                best_keyphrase_overlap,
+                sum(1 for token in query_tokens if token in phrase_tokens),
+            )
+            text_candidates.append(phrase_text)
+
+        for candidate in text_candidates:
+            if not candidate:
+                continue
+            candidate_tokens = set(tokenize(candidate))
+            overlap = sum(1 for token in query_tokens if token in candidate_tokens)
+            if overlap > best_overlap:
+                best_overlap = overlap
+            if normalized_query and normalized_query in " ".join(tokenize(candidate)):
+                phrase_match = True
+
+    coverage = best_overlap / max(len(query_tokens), 1)
+    keyphrase_coverage = best_keyphrase_overlap / max(len(query_tokens), 1)
+    score = (
+        (span.relevance * 0.58)
+        + (coverage * 0.9)
+        + (keyphrase_coverage * 0.45)
+        + (0.28 if phrase_match else 0.0)
+    )
+    if len(query_tokens) >= 3 and best_overlap <= 1 and not phrase_match:
+        score *= 0.55
+    return score
+
+
+def _rerank_spans_for_content_query(spans: list[ActivitySpan], query: str) -> list[ActivitySpan]:
+    if not spans:
+        return spans
+    scored: list[tuple[float, int, ActivitySpan]] = []
+    for index, span in enumerate(spans):
+        score = _content_query_overlap_score(span, query)
+        if span.duration_seconds >= 90:
+            score += min(span.duration_seconds / 1800.0, 0.12)
+        if span.attention_cue:
+            score += 0.04
+        scored.append((score, -index, span))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [item[2] for item in scored]
+
+
+def _condense_source_label(value: str | None, *, max_len: int = 96) -> str | None:
+    text = _normalize_label(value or "")
+    if not text:
+        return None
+    for separator in (" | ", " - ", " — ", ": "):
+        if separator in text:
+            first = text.split(separator, 1)[0].strip()
+            if 18 <= len(first) <= max_len:
+                return first
+    sentence = re.split(r"[.!?]\s+", text, maxsplit=1)[0].strip()
+    if 18 <= len(sentence) <= max_len:
+        return sentence
+    if len(text) > max_len:
+        return text[: max_len - 1].rstrip(" -|:.,") + "…"
+    return text
+
+
+def _content_source_label_for_span(span: ActivitySpan) -> str | None:
+    app_name = _friendly_app_name(span.application).casefold()
+    domain = (_domain(span.url) or "").casefold()
+    candidates: list[str] = []
+    for event in span.events:
+        for value in (
+            (event.window_title or "").strip(),
+            (event.content_text or "").strip(),
+        ):
+            cleaned = _condense_source_label(value)
+            if not cleaned:
+                continue
+            lowered = cleaned.casefold()
+            if lowered == app_name or lowered == domain:
+                continue
+            if lowered in {"newtab", "extensions"}:
+                continue
+            candidates.append(cleaned)
+    for candidate in candidates:
+        if len(candidate) >= 18:
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def _content_query_answer(
+    spans: list[ActivitySpan],
+    *,
+    time_scope: str | None,
+) -> tuple[str, str, list[str]]:
+    top_span = spans[0]
+    domain = _domain(top_span.url)
+    app_name = _friendly_app_name(top_span.application)
+    top_topic = _content_topic_for_span(top_span)
+    source_label = _content_source_label_for_span(top_span)
+    related_topics = [topic for topic in _top_content_topics(spans, limit=3) if topic.casefold() != (top_topic or "").casefold()]
+
+    if source_label and len(source_label) <= 96 and domain:
+        answer = f"I found a strong match on {domain}: {source_label}."
+    elif top_topic and domain:
+        answer = f"I found a strong match on {domain} about {top_topic}."
+    elif source_label:
+        answer = f"I found a strong local match: {source_label}."
+    elif top_topic:
+        answer = f"I found a strong local match about {top_topic}."
+    else:
+        answer = f"I found a strong local match in {app_name}."
+
+    when_text = f"{top_span.start_at.strftime('%b %d')} at {_format_clock(top_span.start_at)}"
+    source_text = domain or app_name
+    summary_parts = [f"Best match: {when_text} in {source_text}."]
+    if source_label and top_topic and top_topic.casefold() not in source_label.casefold():
+        summary_parts.append(f"Closest title: {source_label}.")
+    if related_topics:
+        summary_parts.append(f"Related topics nearby: {_join_labels(related_topics[:2])}.")
+    elif top_topic and source_label and top_topic.casefold() not in source_label.casefold():
+        summary_parts.append(f"It looks like this page was about {top_topic}.")
+    if time_scope:
+        summary_parts.append(f"This came from your local activity {time_scope}.")
+
+    prompts: list[str] = []
+    if top_topic:
+        prompts.append(f"What else did I read about {top_topic}?")
+    if domain:
+        prompts.append(f"When did I last visit {domain}?")
+        prompts.append(f"What else did I read on {domain}?")
+    else:
+        prompts.append(f"When did I last use {app_name}?")
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for prompt in prompts:
+        key = prompt.casefold()
         if key in seen:
             continue
-        topics.append(normalized)
+        deduped.append(prompt)
         seen.add(key)
-        if len(topics) >= 3:
+        if len(deduped) >= 3:
             break
-    return topics
+    return answer, " ".join(summary_parts), deduped
 
 
 def _recent_recall_topics(events: list[Event], *, limit: int = 4) -> list[str]:
     topics: list[str] = []
     seen: set[str] = set()
     for event in events:
+        if not _is_recall_rich_event(event):
+            continue
         for topic in _event_suggestion_topics(event):
             key = topic.casefold()
             if key in seen:
@@ -1540,6 +1783,69 @@ def _listing_query(query: str) -> bool:
     return text.startswith("which ") or "what apps" in text or "what sites" in text
 
 
+def _broad_summary_query(
+    query: str,
+    *,
+    time_scope: str | None,
+    target_domains: set[str],
+    app_hint: str | None,
+    query_category: str | None,
+) -> bool:
+    if not time_scope or target_domains or app_hint:
+        return False
+    text = query.strip().lower().rstrip("?")
+    explicit_patterns = (
+        r"^what did i work on\b",
+        r"^what have i been working on\b",
+        r"^what was i doing\b",
+        r"^what have i been doing\b",
+        r"^what did i do\b",
+        r"^what was i focused on\b",
+        r"^what have i been focused on\b",
+        r"^what did i spend time on\b",
+        r"^what did i use\b",
+        r"^what apps did i use\b",
+        r"^what sites did i visit\b",
+        r"^what did i visit\b",
+        r"^what did i look at\b",
+        r"^show me (my|what i did)\b",
+        r"^summarize\b",
+        r"^summary of\b",
+    )
+    if any(re.match(pattern, text) for pattern in explicit_patterns):
+        return True
+
+    if query_category and (
+        text.startswith("what did i ")
+        or text.startswith("what was i ")
+        or text.startswith("what have i been ")
+    ):
+        return True
+
+    overview_markers = (
+        "work on",
+        "working on",
+        "doing",
+        "focused on",
+        "focus on",
+        "spend time on",
+        "using",
+        "use",
+        "watch",
+        "read",
+        "visit",
+        "brows",
+        "look at",
+    )
+    broad_openers = (
+        text.startswith("what "),
+        text.startswith("show me "),
+        text.startswith("summarize "),
+        text.startswith("summary "),
+    )
+    return any(broad_openers) and any(marker in text for marker in overview_markers)
+
+
 def _detect_intent(query: str) -> str:
     if _duration_query(query):
         return "duration"
@@ -2166,8 +2472,48 @@ def answer_query(query: str) -> QueryAnswer:
         if category_spans:
             relevant_spans = category_spans
 
+    if active_skill is not None and active_skill.name == "content_query":
+        relevant_spans = _rerank_spans_for_content_query(relevant_spans, query)
+
     if skill_limit:
         relevant_spans = relevant_spans[:skill_limit]
+
+    if active_skill is not None and active_skill.name == "content_query":
+        content_answer, content_summary, content_related = _content_query_answer(
+            relevant_spans,
+            time_scope=time_scope,
+        )
+        return QueryAnswer(
+            answer=content_answer,
+            summary=content_summary,
+            details_label="Show top matches",
+            evidence=relevant_spans[:evidence_limit],
+            time_scope_label=time_scope,
+            result_count=len(ranked),
+            related_queries=content_related,
+        )
+
+    if _broad_summary_query(
+        query,
+        time_scope=time_scope,
+        target_domains=target_domains,
+        app_hint=app_hint,
+        query_category=query_category,
+    ):
+        broad_answer, broad_summary = _broad_activity_summary(
+            relevant_spans,
+            time_scope=time_scope,
+            query_category=query_category,
+        )
+        return QueryAnswer(
+            answer=broad_answer,
+            summary=broad_summary,
+            details_label="Show top matches",
+            evidence=relevant_spans[:evidence_limit],
+            time_scope_label=time_scope,
+            result_count=len(ranked),
+            related_queries=_broad_summary_related_queries(relevant_spans, time_scope),
+        )
 
     summary = _query_summary(relevant_spans, time_scope)
     related_queries = _build_related_queries(
@@ -2416,27 +2762,36 @@ def answer_query(query: str) -> QueryAnswer:
     )
 
 
-def dynamic_suggestions(limit: int = 4) -> list[SearchSuggestion]:
-    events = list_recent_events(limit=120)
+def dynamic_suggestions(limit: int = 4, time_filter: str | None = None) -> list[SearchSuggestion]:
+    scoped_events: list[Event] = []
+    scope = (time_filter or "").strip()
+    if scope:
+        try:
+            start_at, end_at = resolve_time_range(scope)
+            scoped_events = list_events_between(start_at, end_at, limit=120)
+        except Exception:
+            scoped_events = []
+    events = scoped_events if scope else list_recent_events(limit=120)
     recall_topics = _recent_recall_topics(events, limit=3)
+    recall_suffix = f" {scope}" if scope else ""
     if not events:
         return [
             SearchSuggestion(
-                title="What was I doing today?",
+                title=f"What was I doing{recall_suffix or ' today'}?",
                 subtitle="Broad overview of your latest activity.",
-                completion="What was I doing today?",
+                completion=f"What was I doing{recall_suffix or ' today'}?",
                 category="Suggested",
             ),
             SearchSuggestion(
-                title="What did I do yesterday evening?",
+                title=f"What did I work on{recall_suffix or ' this week'}?",
                 subtitle="Good for day-part recall.",
-                completion="What did I do yesterday evening?",
+                completion=f"What did I work on{recall_suffix or ' this week'}?",
                 category="Suggested",
             ),
             SearchSuggestion(
-                title="When did I last use my browser?",
+                title=f"Did I use my browser{recall_suffix or ' today'}?",
                 subtitle="Find the latest browser activity.",
-                completion="When did I last use my browser?",
+                completion=f"Did I use my browser{recall_suffix or ' today'}?",
                 category="Suggested",
             ),
         ][:limit]
@@ -2452,7 +2807,7 @@ def dynamic_suggestions(limit: int = 4) -> list[SearchSuggestion]:
     suggestions: list[SearchSuggestion] = []
     if recall_topics:
         topic = recall_topics[0]
-        prompt = f"Where did I read about {topic}?"
+        prompt = f"Where did I read about {topic}{recall_suffix}?"
         suggestions.append(
             SearchSuggestion(
                 title=prompt,
@@ -2462,7 +2817,8 @@ def dynamic_suggestions(limit: int = 4) -> list[SearchSuggestion]:
             )
         )
     if domains:
-        prompt = f"How much time did I spend on {domains.most_common(1)[0][0]} today?"
+        domain_name = domains.most_common(1)[0][0]
+        prompt = f"How much time did I spend on {domain_name}{recall_suffix or ' today'}?"
         suggestions.append(
             SearchSuggestion(
                 title=prompt,
@@ -2472,19 +2828,25 @@ def dynamic_suggestions(limit: int = 4) -> list[SearchSuggestion]:
             )
         )
     if apps:
-        prompt = f"When did I last use {apps.most_common(1)[0][0]}?"
+        app_name = apps.most_common(1)[0][0]
+        if scope:
+            prompt = f"What did I do in {app_name} {scope}?"
+            subtitle = "Focus suggestions around a frequent app in that time window."
+        else:
+            prompt = f"When did I last use {app_name}?"
+            subtitle = "Jump straight to the latest app usage."
         suggestions.append(
             SearchSuggestion(
                 title=prompt,
-                subtitle="Jump straight to the latest app usage.",
+                subtitle=subtitle,
                 completion=prompt,
                 category="Frequent app",
             )
         )
     for prompt, subtitle in (
-        ("What was I doing yesterday evening?", "Look at a recent time slice."),
-        ("What did I work on this week?", "Summarize broader work patterns."),
-        ("Did I open GitHub today?", "Ask a direct yes or no question."),
+        (f"What was I doing{recall_suffix or ' yesterday evening'}?", "Look at a recent time slice."),
+        (f"What did I work on{recall_suffix or ' this week'}?", "Summarize broader work patterns."),
+        (f"Did I open GitHub{recall_suffix or ' today'}?", "Ask a direct yes or no question."),
     ):
         suggestions.append(
             SearchSuggestion(
@@ -2634,7 +2996,7 @@ def autocomplete_suggestions(prefix: str, limit: int = 5) -> list[SearchSuggesti
         "did": [
             SearchSuggestion(
                 title="Did I open GitHub today?",
-                subtitle="Check whether an action likely happened.",
+                subtitle="Check whether a specific activity happened.",
                 completion="Did I open GitHub today?",
                 category="Verification",
             ),
@@ -2685,6 +3047,102 @@ def autocomplete_suggestions(prefix: str, limit: int = 5) -> list[SearchSuggesti
         if len(deduped) >= limit:
             break
     return deduped
+
+
+def _join_labels(labels: list[str]) -> str:
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} and {labels[1]}"
+    return f"{', '.join(labels[:-1])}, and {labels[-1]}"
+
+
+def _broad_summary_related_queries(spans: list[ActivitySpan], time_scope: str | None) -> list[str]:
+    prompts: list[str] = []
+    if time_scope:
+        prompts.append(f"What apps did I use {time_scope}?")
+        prompts.append(f"What sites did I visit {time_scope}?")
+    top_app = None
+    if spans:
+        app_counts = Counter(_friendly_app_name(span.application) for span in spans if span.application)
+        if app_counts:
+            top_app = app_counts.most_common(1)[0][0]
+    if top_app:
+        scope = time_scope or "today"
+        prompts.append(f"How much time did I spend in {top_app} {scope}?")
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for prompt in prompts:
+        key = prompt.casefold()
+        if key in seen:
+            continue
+        deduped.append(prompt)
+        seen.add(key)
+        if len(deduped) >= 3:
+            break
+    return deduped
+
+
+def _broad_activity_summary(
+    spans: list[ActivitySpan],
+    *,
+    time_scope: str | None,
+    query_category: str | None,
+) -> tuple[str, str]:
+    scope = _time_scope_lead(time_scope) if time_scope else "Recently,"
+    app_scores: Counter[str] = Counter()
+    domain_scores: Counter[str] = Counter()
+    category_scores: Counter[str] = Counter()
+    for span in spans:
+        weight = max(span.duration_seconds, 30)
+        app_scores[_friendly_app_name(span.application)] += weight
+        domain = _domain(span.url)
+        if domain:
+            domain_scores[domain] += weight
+        if span.activity_category and span.activity_confidence >= 0.44:
+            category_scores[span.activity_category] += weight
+
+    top_apps = [name for name, _ in app_scores.most_common(3)]
+    top_domains = [name for name, _ in domain_scores.most_common(3)]
+    top_categories = [name.replace("_", " ") for name, _ in category_scores.most_common(2)]
+    top_topics = _top_content_topics(spans, limit=3)
+
+    if query_category:
+        category_label = query_category.replace("_", " ")
+        if top_topics:
+            if query_category == "reading":
+                answer = f"{scope} it looks like a lot of what you read was about {_join_labels(top_topics)}."
+            elif query_category == "watching":
+                answer = f"{scope} it looks like a lot of what you watched was about {_join_labels(top_topics)}."
+            elif query_category == "coding":
+                answer = f"{scope} it looks like a lot of your coding work was around {_join_labels(top_topics)}."
+            else:
+                answer = f"{scope} it looks like a lot of your {category_label} was around {_join_labels(top_topics)}."
+        elif top_apps:
+            answer = f"{scope} it looks like most of your {category_label} happened in {_join_labels(top_apps)}."
+        else:
+            answer = f"{scope} it looks like most of your {category_label} activity was spread across a few different moments."
+    elif top_topics:
+        answer = f"{scope} it looks like a lot of your time went into {_join_labels(top_topics)}."
+    elif top_apps:
+        answer = f"{scope} it looks like you spent most of your time in {_join_labels(top_apps)}."
+    elif top_domains:
+        answer = f"{scope} it looks like you spent most of your time on {_join_labels(top_domains)}."
+    else:
+        answer = f"{scope} I can see the overall activity, but the labels are still a bit messy."
+
+    summary_parts: list[str] = []
+    if top_topics and top_apps:
+        summary_parts.append(f"The main apps around that were {_join_labels(top_apps[:2])}.")
+    if top_categories:
+        summary_parts.append(f"A lot of that looked like {_join_labels(top_categories)}.")
+    if top_domains:
+        summary_parts.append(f"The main sites that showed up were {_join_labels(top_domains[:2])}.")
+    if not summary_parts:
+        summary_parts.append("This is a broad summary based on the strongest local activity in that time window.")
+    return answer, " ".join(summary_parts)
 
 
 try:

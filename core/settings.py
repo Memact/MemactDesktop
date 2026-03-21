@@ -30,3 +30,18 @@ def save_settings(settings: dict) -> None:
         json.dumps(settings, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def load_excluded_apps() -> set[str]:
+    """Return lowercase exe names to exclude from capture."""
+    settings = load_settings()
+    raw = settings.get("excluded_apps") or []
+    if not isinstance(raw, list):
+        return set()
+    return {str(item).strip().lower() for item in raw if str(item).strip()}
+
+
+def save_excluded_apps(apps: set[str]) -> None:
+    settings = load_settings()
+    settings["excluded_apps"] = sorted(str(app).strip().lower() for app in apps if str(app).strip())
+    save_settings(settings)

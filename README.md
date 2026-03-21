@@ -1,10 +1,10 @@
 **Memact**
 
-**Version** `v0.4`
+**Version** `v0.5`
 
 Memact is a searchable memory of your activity.
 It quietly records what you do on your computer and lets you find it later.
-Instead of searching the internet again, you can search your own past actions.
+Instead of searching the internet again, you can search your own past activity.
 
 ---
 
@@ -35,6 +35,9 @@ You can ask things like:
 - Where did I see that?
 - Where did I read about delivery fees?
 - What was that message about resetting my password?
+- What was that article about async Python I read last week?
+- Find that thing about JWT authentication
+- What did I read about transformer models?
 - What did I do yesterday evening?
 - What did I watch today?
 - When did I last use Chrome?
@@ -44,17 +47,21 @@ You can ask things like:
 
 **What Memact Records**
 
-Memact does not track everything.
+Memact records changes in your attention — what you were focused
+on and what you actually read.
 
-It records changes in attention. In simple terms, what you were focused on.
+For browser activity, Memact extracts the full text of articles,
+documentation, and pages you read, then distils them into key
+concepts. This means you can find something by describing what it
+was about, not just where you saw it.
 
-For example:
+For all apps, Memact records:
 
 - switching between apps
-- opening a new page
+- opening a new page or document
 - moving from one task to another
 
-It does not record keystrokes or anything invasive.
+It does not record keystrokes, passwords, or screenshots.
 
 ---
 
@@ -75,6 +82,7 @@ No manual organization.
 - no external APIs
 - no remote AI calls
 - append-only memory
+- your data is exportable and portable
 - search, not dashboards
 
 ---
@@ -131,9 +139,15 @@ Requirements:
 - PyQt6
 - pywinauto
 - sentence-transformers
-`sentence-transformers` pulls in PyTorch (large download). If you want a lighter setup, remove it from `requirements.txt` and Memact will fall back to its local deterministic embedding path.
 
 Install:
+
+> ⚠️ **First install takes 10–20 minutes.**
+> `sentence-transformers` downloads PyTorch (~1.5GB). This happens
+> once. After that, Memact runs fully offline.
+> To skip the download: remove `sentence-transformers` from
+> `requirements.txt` before installing. Memact will use its
+> built-in hash embedding — search still works, just less precise.
 
 ```powershell
 pip install -r requirements.txt
