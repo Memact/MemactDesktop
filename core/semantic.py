@@ -10,21 +10,30 @@ from pathlib import Path
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 _EMBED_DIM = 256
 _LOCAL_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+_LOCAL_RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 
-def _local_model_candidates() -> list[Path]:
+def _local_model_candidates(model_name: str) -> list[Path]:
+    org, _, repo = model_name.partition("/")
+    repo_slug = repo or org
+    owner_slug = org if repo else ""
+    hub_dir = (
+        f"models--{owner_slug.replace('/', '--')}--{repo_slug.replace('/', '--')}"
+        if owner_slug
+        else f"models--{repo_slug.replace('/', '--')}"
+    )
     home = Path.home()
     return [
-        home / ".cache" / "huggingface" / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2",
-        home / ".cache" / "torch" / "sentence_transformers" / _LOCAL_MODEL_NAME,
-        home / "AppData" / "Local" / "huggingface" / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2",
-        home / "AppData" / "Local" / "sentence_transformers" / _LOCAL_MODEL_NAME,
+        home / ".cache" / "huggingface" / "hub" / hub_dir,
+        home / ".cache" / "torch" / "sentence_transformers" / model_name,
+        home / "AppData" / "Local" / "huggingface" / "hub" / hub_dir,
+        home / "AppData" / "Local" / "sentence_transformers" / model_name,
     ]
 
 
-@lru_cache(maxsize=1)
-def _has_local_transformer_model() -> bool:
-    for candidate in _local_model_candidates():
+@lru_cache(maxsize=None)
+def _has_local_transformer_model(model_name: str) -> bool:
+    for candidate in _local_model_candidates(model_name):
         if candidate.exists():
             return True
     return False
@@ -54,13 +63,29 @@ def _hash_embedding(text: str) -> list[float]:
 
 @lru_cache(maxsize=1)
 def _transformer_backend():
-    if not _has_local_transformer_model():
+    if not _has_local_transformer_model(_LOCAL_MODEL_NAME):
         return None
     try:
         from sentence_transformers import SentenceTransformer  # type: ignore
 
         model = SentenceTransformer(
             _LOCAL_MODEL_NAME,
+            local_files_only=True,
+        )
+        return model
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=1)
+def _reranker_backend():
+    if not _has_local_transformer_model(_LOCAL_RERANKER_MODEL_NAME):
+        return None
+    try:
+        from sentence_transformers import CrossEncoder  # type: ignore
+
+        model = CrossEncoder(
+            _LOCAL_RERANKER_MODEL_NAME,
             local_files_only=True,
         )
         return model
@@ -89,3 +114,42 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     if size == 0:
         return 0.0
     return sum(float(left[index]) * float(right[index]) for index in range(size))
+
+
+def rerank_query_text_pairs(query: str, texts: list[str]) -> list[float]:
+    if not texts:
+        return []
+
+    model = _reranker_backend()
+    if model is not None:
+        try:
+            pairs = [(query, text) for text in texts]
+            scores = model.predict(pairs)
+            return [float(score) for score in scores]
+        except Exception:
+            pass
+
+    query_tokens = tokenize(query)
+    normalized_query = normalize_text(query)
+    scores: list[float] = []
+    for text in texts:
+        normalized_text = normalize_text(text)
+        ordered_tokens = normalized_text.split()
+        text_tokens = set(ordered_tokens)
+        overlap = (
+            sum(1 for token in query_tokens if token in text_tokens) / max(len(query_tokens), 1)
+            if query_tokens
+            else 0.0
+        )
+        phrase_match = 1.0 if normalized_query and normalized_query in normalized_text else 0.0
+        adjacency = 0.0
+        if len(query_tokens) >= 2 and len(ordered_tokens) >= 2:
+            adjacent_hits = 0
+            for left, right in zip(query_tokens, query_tokens[1:]):
+                pair = f"{left} {right}"
+                if pair in normalized_text:
+                    adjacent_hits += 1
+            adjacency = adjacent_hits / max(len(query_tokens) - 1, 1)
+        length_penalty = min(max(len(ordered_tokens) - 80, 0) / 240.0, 0.18)
+        scores.append((overlap * 0.56) + (phrase_match * 0.30) + (adjacency * 0.22) - length_penalty)
+    return scores
